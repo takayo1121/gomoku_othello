@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>五目オセロ（交点 / 安全手OFF / CPU先後選択）</title>
+<title>五目オセロ（交点 / 安全手OFF / CPU先後・難易度）</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <style>
@@ -100,6 +100,13 @@
       <option value="white">あなた：白（後手）</option>
     </select>
 
+    <!-- CPU戦のときだけ表示 -->
+    <select id="difficulty" title="CPU難易度" style="display:none">
+      <option value="easy">難易度：弱</option>
+      <option value="medium" selected>難易度：中</option>
+      <option value="hard">難易度：強</option>
+    </select>
+
     <button id="safeToggleBtn">安全手：OFF</button>
   </div>
 
@@ -108,14 +115,15 @@
   <div class="note">
     安全手（塗り丸）：今そこに置いても、次の相手番で相手が即五連で勝てない手。<br>
     表示色：黒番＝青、白番＝赤（初期状態はOFF）<br>
-    CPU戦では<strong>CPU番の安全手は表示しません</strong>。
+    CPU戦では<strong>CPU番の安全手は表示しません</strong>。<br>
+    CPU難易度：弱・中・強（中がデフォルト）
   </div>
 
 <script>
 (() => {
   const N=9, PLAY_MIN=1, PLAY_MAX=7;
   const EMPTY=0, BLACK=1, WHITE=2;
-  const dirs=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+  const dirs8=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
   const checkDirs=[[1,0],[0,1],[1,1],[1,-1]];
 
   let board, turn, gameOver, history;
@@ -125,6 +133,7 @@
   const $status=document.getElementById("status");
   const $mode=document.getElementById("mode");
   const $humanColor=document.getElementById("humanColor");
+  const $difficulty=document.getElementById("difficulty");
   const $safeBtn=document.getElementById("safeToggleBtn");
 
   const opp=c=>c===BLACK?WHITE:BLACK;
@@ -137,20 +146,22 @@
   const cpu=()=> opp(human());
   const isHumanTurn=()=> !isCpuMode() || turn===human();
 
-  function updateHumanColorVisibility(){
-    $humanColor.style.display = isCpuMode() ? "" : "none";
+  function updateCpuUiVisibility(){
+    const on = isCpuMode();
+    $humanColor.style.display = on ? "" : "none";
+    $difficulty.style.display = on ? "" : "none";
   }
 
   function init(){
     board=Array.from({length:N},()=>Array(N).fill(EMPTY));
     turn=BLACK; gameOver=false; history=[];
-    updateHumanColorVisibility();
+    updateCpuUiVisibility();
     render(); updateStatus(); maybeCpu();
   }
 
   function flips(b,r,c,col){
     let f=[];
-    for(const[dR,dC]of dirs){
+    for(const[dR,dC]of dirs8){
       let x=r+dR,y=c+dC,tmp=[];
       while(inB(x,y)&&b[x][y]===opp(col)){tmp.push([x,y]);x+=dR;y+=dC;}
       if(tmp.length&&inB(x,y)&&b[x][y]===col)f=f.concat(tmp);
@@ -170,19 +181,20 @@
       if(b[r][c]!==col)continue;
       for(const[dR,dC]of checkDirs){
         let n=1,x=r+dR,y=c+dC;
-        while(inB(x,y)&&b[x][y]===col){if(++n>=5)return true;x+=dR;y+=dC;}
+        while(inB(x,y)&&b[x][y]===col){ if(++n>=5) return true; x+=dR;y+=dC; }
       }
     }
     return false;
   }
 
   function legal(b){
-    let m=[];
+    const m=[];
     for(let r=PLAY_MIN;r<=PLAY_MAX;r++)for(let c=PLAY_MIN;c<=PLAY_MAX;c++)
       if(b[r][c]===EMPTY)m.push([r,c]);
     return m;
   }
 
+  // 安全手（表示用）
   function safeMoves(b,col){
     const set=new Set(), o=opp(col);
     for(const[r,c]of legal(b)){
@@ -199,6 +211,219 @@
     return set;
   }
 
+  // ---------------------------
+  // CPU 強化：候補手生成 + 評価 + ミニマックス
+  // ---------------------------
+
+  function anyStoneExists(b){
+    for(let r=PLAY_MIN;r<=PLAY_MAX;r++)for(let c=PLAY_MIN;c<=PLAY_MAX;c++)
+      if(b[r][c]!==EMPTY) return true;
+    return false;
+  }
+
+  // 既存の石の近傍（距離<=2）だけを候補にして計算量を落とす
+  function candidateMoves(b, radius=2){
+    const has = anyStoneExists(b);
+    if(!has){
+      // 初手は中央優先（交点(4,4)が中心）
+      return [[4,4],[4,3],[3,4],[4,5],[5,4]];
+    }
+    const cand = new Set();
+    for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
+      for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
+        if(b[r][c]===EMPTY) continue;
+        for(let dr=-radius; dr<=radius; dr++){
+          for(let dc=-radius; dc<=radius; dc++){
+            const rr=r+dr, cc=c+dc;
+            if(playable(rr,cc) && b[rr][cc]===EMPTY) cand.add(`${rr},${cc}`);
+          }
+        }
+      }
+    }
+    const out=[];
+    for(const s of cand){
+      const [r,c]=s.split(",").map(Number);
+      out.push([r,c]);
+    }
+    return out;
+  }
+
+  // ある地点に置いたとき、自分色が何個連なるか（単純に周囲連結を見る）
+  function lineScore(b, r, c, col, dr, dc){
+    let cnt1=0, x=r+dr, y=c+dc;
+    while(playable(x,y) && b[x][y]===col){ cnt1++; x+=dr; y+=dc; }
+    let cnt2=0; x=r-dr; y=c-dc;
+    while(playable(x,y) && b[x][y]===col){ cnt2++; x-=dr; y-=dc; }
+    return 1+cnt1+cnt2;
+  }
+
+  // 盤面評価（CPU視点）
+  function evaluate(b, cpuCol){
+    const humCol = opp(cpuCol);
+
+    // 勝敗は最優先
+    if(hasFive(b, cpuCol)) return 1e9;
+    if(hasFive(b, humCol)) return -1e9;
+
+    let score = 0;
+
+    // 中央寄り（軽く）
+    for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
+      for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
+        const v=b[r][c];
+        if(v===EMPTY) continue;
+        const centerDist = Math.abs(r-4)+Math.abs(c-4);
+        const w = 6 - centerDist; // だいたい 0..6
+        if(v===cpuCol) score += w;
+        else score -= w;
+      }
+    }
+
+    // 連の強さ（4,3,2 を重く）
+    // 各石を起点に4方向だけ見る（重複はあるが軽量）
+    function addFor(col, sign){
+      for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
+        for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
+          if(b[r][c]!==col) continue;
+          for(const [dr,dc] of checkDirs){
+            // ここを起点に伸びる最大連（片方向）
+            let len=1, x=r+dr, y=c+dc;
+            while(playable(x,y) && b[x][y]===col){ len++; x+=dr; y+=dc; }
+            if(len>=4) score += sign*1200;
+            else if(len===3) score += sign*160;
+            else if(len===2) score += sign*20;
+          }
+        }
+      }
+    }
+    addFor(cpuCol, +1);
+    addFor(humCol, -1);
+
+    return score;
+  }
+
+  function difficultyDepth(){
+    const d = $difficulty.value;
+    if(d==="easy") return 1;
+    if(d==="medium") return 2;
+    return 3; // hard
+  }
+
+  function maxCandidates(){
+    // 深さが深いほど候補を絞る（速度優先）
+    const d = $difficulty.value;
+    if(d==="easy") return 14;
+    if(d==="medium") return 12;
+    return 10;
+  }
+
+  // 候補手を「良さそう順」に並べる（先に良い手を探索→αβが効く）
+  function orderedMoves(b, col){
+    const cand = candidateMoves(b, 2);
+    const scored=[];
+    for(const [r,c] of cand){
+      const nb = sim(b,r,c,col);
+      if(!nb) continue;
+      // 置いた直後の局所的な連の伸びを優先
+      let local=0;
+      for(const [dr,dc] of checkDirs){
+        local = Math.max(local, lineScore(nb, r, c, col, dr, dc));
+      }
+      // 勝ち手は最優先
+      if(hasFive(nb, col)) local += 100;
+      scored.push({r,c,local, nb});
+    }
+    scored.sort((a,b)=>b.local-a.local);
+    const limit = maxCandidates();
+    return scored.slice(0, limit).map(x=>[x.r,x.c]);
+  }
+
+  function minimax(b, depth, alpha, beta, maximizing, cpuCol){
+    const humCol = opp(cpuCol);
+
+    // 終端
+    if(depth===0 || hasFive(b,cpuCol) || hasFive(b,humCol)){
+      return evaluate(b, cpuCol);
+    }
+
+    const col = maximizing ? cpuCol : humCol;
+    const moves = orderedMoves(b, col);
+    if(moves.length===0) return evaluate(b, cpuCol);
+
+    if(maximizing){
+      let best = -Infinity;
+      for(const [r,c] of moves){
+        const nb = sim(b,r,c,col);
+        if(!nb) continue;
+        const v = minimax(nb, depth-1, alpha, beta, false, cpuCol);
+        if(v>best) best=v;
+        if(best>alpha) alpha=best;
+        if(beta<=alpha) break;
+      }
+      return best;
+    }else{
+      let best = Infinity;
+      for(const [r,c] of moves){
+        const nb = sim(b,r,c,col);
+        if(!nb) continue;
+        const v = minimax(nb, depth-1, alpha, beta, true, cpuCol);
+        if(v<best) best=v;
+        if(best<beta) beta=best;
+        if(beta<=alpha) break;
+      }
+      return best;
+    }
+  }
+
+  function chooseCpuMove(){
+    const cpuCol = cpu();
+    const humCol = human();
+
+    const moves = orderedMoves(board, cpuCol);
+
+    // まず即勝ち
+    for(const [r,c] of moves){
+      const nb = sim(board,r,c,cpuCol);
+      if(nb && hasFive(nb, cpuCol)) return [r,c];
+    }
+    // 次に相手の即勝ちをブロック（“ブロックすれば必ず止まる”とは限らないが実用的）
+    // 相手の勝ち手を探して、その座標に打てるなら優先
+    const humWins = orderedMoves(board, humCol);
+    for(const [r,c] of humWins){
+      const nb = sim(board,r,c,humCol);
+      if(nb && hasFive(nb, humCol)){
+        // その場所にCPUが打てるなら防ぐ
+        if(board[r][c]===EMPTY && playable(r,c)) return [r,c];
+      }
+    }
+
+    const depth = difficultyDepth();
+    let bestMove = moves[0] || [4,4];
+    let bestVal = -Infinity;
+
+    // easyはさらにランダム性を少し入れて “弱さ” を作る
+    const isEasy = $difficulty.value==="easy";
+
+    for(const [r,c] of moves){
+      const nb = sim(board,r,c,cpuCol);
+      if(!nb) continue;
+      const v = minimax(nb, depth-1, -Infinity, Infinity, false, cpuCol);
+
+      // easy：評価が近い手から少しブレる
+      const vv = isEasy ? (v + (Math.random()-0.5)*30) : v;
+
+      if(vv > bestVal){
+        bestVal = vv;
+        bestMove = [r,c];
+      }
+    }
+    return bestMove;
+  }
+
+  // ---------------------------
+  // ゲーム進行
+  // ---------------------------
+
   function move(r,c){
     if(gameOver||!playable(r,c)||board[r][c]!==EMPTY)return;
     if(isCpuMode()&&!isHumanTurn())return;
@@ -211,33 +436,48 @@
     turn=opp(turn); render(); updateStatus(); maybeCpu();
   }
 
-  function chooseCpu(){
-    const m=legal(board);
-    for(const[r,c]of m){ const nb=sim(board,r,c,cpu()); if(nb&&hasFive(nb,cpu()))return[r,c]; }
-    for(const[r,c]of m){ const nb=sim(board,r,c,human()); if(nb&&hasFive(nb,human()))return[r,c]; }
-    return m.sort((a,b)=> (Math.abs(a[0]-4)+Math.abs(a[1]-4))-(Math.abs(b[0]-4)+Math.abs(b[1]-4)))[0];
-  }
-
   function maybeCpu(){
     if(!isCpuMode()||gameOver||turn!==cpu())return;
+
+    // UI固まり防止：少し遅延
     setTimeout(()=>{
+      if(gameOver) return;
+
       history.push({board:clone(board),turn,gameOver});
-      const[r,c]=chooseCpu();
+      const [r,c] = chooseCpuMove();
+
+      // まれに候補が空になることがあるので保険
+      if(!(playable(r,c) && board[r][c]===EMPTY)){
+        const fallback = legal(board)[0];
+        if(!fallback) return;
+        r = fallback[0]; c = fallback[1];
+      }
+
       board[r][c]=turn;
       flips(board,r,c,turn).forEach(p=>board[p[0]][p[1]]=turn);
+
       if(hasFive(board,turn)){ gameOver=true; render(); updateStatus(`${turn===BLACK?"黒":"白"}の勝ち！`); return; }
       turn=opp(turn); render(); updateStatus();
-    },220);
+    }, 220);
   }
 
   function updateStatus(msg){
     if(msg){$status.textContent=msg;return;}
     if(gameOver){$status.textContent="ゲーム終了";return;}
-    if(!isCpuMode()){$status.textContent=turn===BLACK?"黒の手番":"白の手番";return;}
-    $status.textContent=`手番：${turn===BLACK?"黒":"白"}${isHumanTurn()?"（あなた）":"（CPU）"}`;
+    if(!isCpuMode()){
+      $status.textContent=turn===BLACK?"黒の手番":"白の手番";
+      return;
+    }
+    const label = ($difficulty.value==="easy")?"弱":($difficulty.value==="medium")?"中":"強";
+    $status.textContent=`手番：${turn===BLACK?"黒":"白"}${isHumanTurn()?"（あなた）":"（CPU）"} / CPU難易度：${label}`;
   }
 
   function render(){
+    // 安全手表示条件：
+    // - ON
+    // - ゲーム中
+    // - PvPなら手番ごと
+    // - CPU戦なら「あなたの手番のみ」（CPU番は表示しない）
     const show = showSafe && !gameOver && (!isCpuMode()||isHumanTurn());
     const safes = show ? safeMoves(board,turn) : new Set();
     const cls = turn===WHITE?"safe-red":"safe-blue";
@@ -264,18 +504,24 @@
     }
   }
 
+  // UIイベント
   document.getElementById("undoBtn").onclick=()=>{
     if(!history.length)return;
     const s=history.pop(); board=clone(s.board); turn=s.turn; gameOver=s.gameOver;
     render(); updateStatus();
+
+    // CPU戦は「あなたの手番」まで戻す
     if(isCpuMode()&&!isHumanTurn()&&history.length){
       const s2=history.pop(); board=clone(s2.board); turn=s2.turn; gameOver=s2.gameOver;
       render(); updateStatus();
     }
   };
+
   document.getElementById("restartBtn").onclick=init;
+
   $mode.onchange=init;
   $humanColor.onchange=init;
+  $difficulty.onchange=init;
 
   $safeBtn.onclick=()=>{
     showSafe=!showSafe;
