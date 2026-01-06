@@ -10,11 +10,8 @@
     --panel:#111826;
     --text:#e6eef8;
     --muted:#9fb0c5;
-    --line:#2b3a52;
     --wood:#caa56a;
     --wood2:#b98f4f;
-    --accent:#4aa3ff;
-    --danger:#ff4a4a;
   }
   body{
     margin:0;
@@ -46,9 +43,7 @@
   .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
   .row > *{ margin:4px 0; }
   label{ font-size:13px; color:var(--muted); }
-  select, button, input[type="checkbox"]{
-    font-size:14px;
-  }
+  select, button, input[type="checkbox"]{ font-size:14px; }
   select, button{
     background:#0f1726;
     color:var(--text);
@@ -56,16 +51,11 @@
     border-radius:10px;
     padding:8px 10px;
   }
-  button{
-    cursor:pointer;
-  }
+  button{ cursor:pointer; }
   button:hover{ border-color: rgba(74,163,255,.9); }
   button:disabled{ opacity:.45; cursor:not-allowed; }
   .tiny{ font-size:12px; color:var(--muted); }
-  .status{
-    display:flex; flex-direction:column; gap:6px;
-    font-size:14px;
-  }
+  .status{ display:flex; flex-direction:column; gap:6px; font-size:14px; }
   .status strong{ font-size:16px; }
   canvas{
     width:100%;
@@ -82,6 +72,7 @@
   }
   .blue{ background:#3aa0ff; }
   .red{ background:#ff5252; }
+
   .overlay{
     position:fixed;
     inset:0;
@@ -176,7 +167,8 @@
 
     <div class="tiny" style="line-height:1.7;">
       CPU思考時間（強）: <span class="kbd">6手目まで最大3秒</span> / <span class="kbd">10手目まで最大10秒</span> / 以降<span class="kbd">最大30秒</span><br>
-      思考が<span class="kbd">3秒超</span>なら中央に「思考中…」を表示します。
+      思考が<span class="kbd">3秒超</span>なら中央に「思考中…」を表示します。<br>
+      CPU着手はテンポ調整として<strong>最低0.5秒</strong>空けます。
     </div>
   </div>
 </div>
@@ -186,831 +178,773 @@
 </div>
 
 <script>
-/* =========================
-   Core rules & board
-========================= */
-const SIZE = 7;          // playable intersections are 7x7
-const EMPTY = 0, BLACK = 1, WHITE = 2;
+(() => {
+  "use strict";
 
-const dirs8 = [
-  [-1,-1],[-1,0],[-1,1],
-  [0,-1],       [0,1],
-  [1,-1],[1,0],[1,1]
-];
-const checkDirs = [[1,0],[0,1],[1,1],[1,-1]];
+  /* =========================
+     Core rules & board
+  ========================= */
+  const SIZE = 7;
+  const EMPTY = 0, BLACK = 1, WHITE = 2;
 
-const opp = c => (c===BLACK?WHITE:BLACK);
+  const dirs8 = [
+    [-1,-1],[-1,0],[-1,1],
+    [0,-1],       [0,1],
+    [1,-1],[1,0],[1,1]
+  ];
+  const checkDirs = [[1,0],[0,1],[1,1],[1,-1]];
+  const opp = c => (c===BLACK?WHITE:BLACK);
 
-function inside(r,c){ return r>=0 && r<SIZE && c>=0 && c<SIZE; }
+  const inside = (r,c) => (r>=0 && r<SIZE && c>=0 && c<SIZE);
+  const makeBoard = () => Array.from({length: SIZE}, () => Array(SIZE).fill(EMPTY));
+  const cloneBoard = b => b.map(row => row.slice());
 
-function makeBoard(){
-  return Array.from({length: SIZE}, ()=> Array(SIZE).fill(EMPTY));
-}
-
-function cloneBoard(b){
-  return b.map(row => row.slice());
-}
-
-function boardCount(b){
-  let bc=0,wc=0;
-  for(let r=0;r<SIZE;r++){
-    for(let c=0;c<SIZE;c++){
-      if(b[r][c]===BLACK) bc++;
-      else if(b[r][c]===WHITE) wc++;
-    }
-  }
-  return {bc,wc, stones: bc+wc};
-}
-
-function flips(b, r, c, col){
-  // returns array of [rr,cc] to flip
-  const out = [];
-  const o = opp(col);
-  for(const [dr,dc] of dirs8){
-    let rr=r+dr, cc=c+dc;
-    const tmp=[];
-    while(inside(rr,cc) && b[rr][cc]===o){
-      tmp.push([rr,cc]);
-      rr+=dr; cc+=dc;
-    }
-    if(tmp.length && inside(rr,cc) && b[rr][cc]===col){
-      for(const p of tmp) out.push(p);
-    }
-  }
-  return out;
-}
-
-function applyMove(b, r, c, col){
-  if(!inside(r,c)) return null;
-  if(b[r][c]!==EMPTY) return null;
-
-  const f = flips(b,r,c,col);
-  // 五目式：どこでも置ける（空マスならOK）
-  // ※反転が0でも置ける仕様（五目に寄せる）
-  const nb = cloneBoard(b);
-  nb[r][c]=col;
-  for(const [rr,cc] of f) nb[rr][cc]=col;
-  return { board: nb, flipped: f };
-}
-
-/* =========================
-   Win condition: exact five
-   - 5連があり、6連以上は勝ちではない
-========================= */
-function hasExactFive(b, col){
-  for(let r=0;r<SIZE;r++){
-    for(let c=0;c<SIZE;c++){
-      if(b[r][c]!==col) continue;
-
-      for(const [dr,dc] of checkDirs){
-        // start point check: previous cell must not be col
-        const pr=r-dr, pc=c-dc;
-        if(inside(pr,pc) && b[pr][pc]===col) continue;
-
-        // check 5
-        let ok=true;
-        for(let k=0;k<5;k++){
-          const rr=r+dr*k, cc=c+dc*k;
-          if(!inside(rr,cc) || b[rr][cc]!==col){ ok=false; break; }
-        }
-        if(!ok) continue;
-
-        // 6th must not be col
-        const nr=r+dr*5, nc=c+dc*5;
-        if(inside(nr,nc) && b[nr][nc]===col) continue;
-
-        return true;
+  function boardCount(b){
+    let bc=0,wc=0;
+    for(let r=0;r<SIZE;r++){
+      for(let c=0;c<SIZE;c++){
+        if(b[r][c]===BLACK) bc++;
+        else if(b[r][c]===WHITE) wc++;
       }
     }
-  }
-  return false;
-}
-
-function legalMoves(b){
-  const m=[];
-  for(let r=0;r<SIZE;r++){
-    for(let c=0;c<SIZE;c++){
-      if(b[r][c]===EMPTY) m.push([r,c]);
-    }
-  }
-  return m;
-}
-
-/* =========================
-   UI / State
-========================= */
-const canvas = document.getElementById("board");
-const ctx = canvas.getContext("2d");
-
-const elMode = document.getElementById("mode");
-const elHumanColor = document.getElementById("humanColor");
-const elDiff = document.getElementById("difficulty");
-const wrapHuman = document.getElementById("cpuColorWrap");
-const wrapDiff = document.getElementById("difficultyWrap");
-const elShowSafe = document.getElementById("showSafe");
-
-const btnNew = document.getElementById("newGame");
-const btnUndo = document.getElementById("undo");
-
-const turnText = document.getElementById("turnText");
-const resultText = document.getElementById("resultText");
-const countText = document.getElementById("countText");
-
-const thinkingOverlay = document.getElementById("thinking");
-
-let game = null;
-
-function newGame(){
-  const mode = elMode.value; // pvp | cpu
-  const humanIsBlack = (elHumanColor.value === "black");
-  const humanCol = humanIsBlack ? BLACK : WHITE;
-  const cpuCol = opp(humanCol);
-
-  game = {
-    mode,
-    board: makeBoard(),
-    turn: BLACK,
-    over: false,
-    winner: null, // BLACK/WHITE
-    history: [], // stack of {board, turn}
-    humanCol,
-    cpuCol,
-  };
-
-  // safety display default OFF (per request)
-  elShowSafe.checked = false;
-
-  pushHistory();
-  updateUI();
-  maybeCpuMove();
-}
-
-function pushHistory(){
-  game.history.push({
-    board: cloneBoard(game.board),
-    turn: game.turn,
-    over: game.over,
-    winner: game.winner
-  });
-}
-
-function popHistory(steps=1){
-  while(steps-- > 0 && game.history.length > 1){
-    game.history.pop();
-  }
-  const last = game.history[game.history.length-1];
-  game.board = cloneBoard(last.board);
-  game.turn = last.turn;
-  game.over = last.over;
-  game.winner = last.winner;
-}
-
-function setOver(winner){
-  game.over = true;
-  game.winner = winner; // BLACK/WHITE
-}
-
-function currentTurnName(){
-  return game.turn===BLACK ? "黒番" : "白番";
-}
-
-function colorName(c){ return c===BLACK ? "黒" : "白"; }
-
-function updateUI(){
-  // show/hide cpu controls
-  if(elMode.value === "cpu"){
-    wrapHuman.style.display = "";
-    wrapDiff.style.display = "";
-  }else{
-    wrapHuman.style.display = "none";
-    wrapDiff.style.display = "none";
+    return {bc,wc, stones: bc+wc};
   }
 
-  // status
-  turnText.textContent = game.over
-    ? "対局終了"
-    : currentTurnName();
-
-  if(game.over){
-    resultText.textContent = game.winner ? `（${colorName(game.winner)}の勝ち）` : "（引き分け）";
-  }else{
-    resultText.textContent = "";
-  }
-
-  const {bc,wc,stones} = boardCount(game.board);
-  countText.textContent = `黒: ${bc} / 白: ${wc}　手数: ${stones}`;
-
-  // buttons
-  btnUndo.disabled = (game.history.length<=1) || isCpuThinking;
-  btnNew.disabled = isCpuThinking;
-
-  draw();
-}
-
-function showThinking(on){
-  thinkingOverlay.style.display = on ? "flex" : "none";
-}
-
-/* =========================
-   Drawing
-========================= */
-function draw(){
-  const W = canvas.width, H=canvas.height;
-  ctx.clearRect(0,0,W,H);
-
-  const pad = 50;
-  const grid = (W - 2*pad) / (SIZE-1);
-  const ox = pad, oy = pad;
-
-  // grid lines
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "rgba(0,0,0,.35)";
-  for(let i=0;i<SIZE;i++){
-    // horizontal
-    ctx.beginPath();
-    ctx.moveTo(ox, oy + i*grid);
-    ctx.lineTo(ox + (SIZE-1)*grid, oy + i*grid);
-    ctx.stroke();
-    // vertical
-    ctx.beginPath();
-    ctx.moveTo(ox + i*grid, oy);
-    ctx.lineTo(ox + i*grid, oy + (SIZE-1)*grid);
-    ctx.stroke();
-  }
-
-  // coordinates (a1..a7 / b1..b7)
-  ctx.fillStyle = "rgba(0,0,0,.45)";
-  ctx.font = "14px system-ui";
-  for(let c=0;c<SIZE;c++){
-    ctx.fillText(String.fromCharCode(97+c), ox + c*grid - 4, oy - 18);
-  }
-  for(let r=0;r<SIZE;r++){
-    ctx.fillText(String(1+r), ox - 22, oy + r*grid + 5);
-  }
-
-  // safe moves overlay (only on human turn, and only if toggled ON)
-  let safeSet = null;
-  if(elShowSafe.checked && !game.over && isHumanTurn()){
-    safeSet = computeSafeMoves(game.board, game.turn);
-  }
-
-  // draw safe dots
-  if(safeSet){
-    for(const key of safeSet){
-      const [r,c] = key.split(",").map(Number);
-      const x = ox + c*grid;
-      const y = oy + r*grid;
-      ctx.beginPath();
-      ctx.arc(x,y,8,0,Math.PI*2);
-      ctx.fillStyle = (game.turn===BLACK) ? "rgba(58,160,255,.95)" : "rgba(255,82,82,.95)";
-      ctx.fill();
-      ctx.strokeStyle = "rgba(0,0,0,.25)";
-      ctx.stroke();
-    }
-  }
-
-  // stones
-  for(let r=0;r<SIZE;r++){
-    for(let c=0;c<SIZE;c++){
-      const v = game.board[r][c];
-      if(v===EMPTY) continue;
-      const x = ox + c*grid;
-      const y = oy + r*grid;
-
-      // shadow
-      ctx.beginPath();
-      ctx.arc(x+2,y+3,20,0,Math.PI*2);
-      ctx.fillStyle = "rgba(0,0,0,.22)";
-      ctx.fill();
-
-      // stone
-      ctx.beginPath();
-      ctx.arc(x,y,20,0,Math.PI*2);
-      if(v===BLACK){
-        const g = ctx.createRadialGradient(x-6,y-6,4, x,y,24);
-        g.addColorStop(0,"#444");
-        g.addColorStop(1,"#070707");
-        ctx.fillStyle = g;
-      }else{
-        const g = ctx.createRadialGradient(x-6,y-6,4, x,y,24);
-        g.addColorStop(0,"#fff");
-        g.addColorStop(1,"#d9d9d9");
-        ctx.fillStyle = g;
+  function flips(b, r, c, col){
+    const out = [];
+    const o = opp(col);
+    for(const [dr,dc] of dirs8){
+      let rr=r+dr, cc=c+dc;
+      const tmp=[];
+      while(inside(rr,cc) && b[rr][cc]===o){
+        tmp.push([rr,cc]);
+        rr+=dr; cc+=dc;
       }
-      ctx.fill();
-      ctx.strokeStyle = "rgba(0,0,0,.25)";
-      ctx.stroke();
-    }
-  }
-
-  // if game over, subtle overlay text on board
-  if(game.over){
-    ctx.fillStyle = "rgba(0,0,0,.35)";
-    ctx.fillRect(0, H/2-34, W, 68);
-    ctx.fillStyle = "rgba(255,255,255,.95)";
-    ctx.font = "bold 22px system-ui";
-    const t = game.winner ? `${colorName(game.winner)}の勝ち` : "引き分け";
-    const w = ctx.measureText(t).width;
-    ctx.fillText(t, (W-w)/2, H/2+8);
-  }
-}
-
-function screenToRC(x,y){
-  const W = canvas.width;
-  const pad = 50;
-  const grid = (W - 2*pad) / (SIZE-1);
-  const ox = pad, oy = pad;
-
-  // nearest intersection
-  const c = Math.round((x - ox)/grid);
-  const r = Math.round((y - oy)/grid);
-  if(!inside(r,c)) return null;
-
-  // distance threshold
-  const ix = ox + c*grid;
-  const iy = oy + r*grid;
-  const dist = Math.hypot(x-ix,y-iy);
-  if(dist > grid*0.38) return null;
-
-  return {r,c};
-}
-
-/* =========================
-   Safe move display
-   "safe" = not an immediate losing move:
-    after you play it, opponent has a move that wins immediately (exact five) -> unsafe
-========================= */
-function computeSafeMoves(b, turnCol){
-  const moves = legalMoves(b);
-  const safe = new Set();
-  for(const [r,c] of moves){
-    const res = applyMove(b,r,c,turnCol);
-    if(!res) continue;
-    const nb = res.board;
-
-    // if your move already wins, it is safe (and best)
-    if(hasExactFive(nb, turnCol)){
-      safe.add(`${r},${c}`);
-      continue;
-    }
-
-    // check if opponent has immediate winning reply
-    const op = opp(turnCol);
-    const replies = legalMoves(nb);
-    let oppWins = false;
-    for(const [rr,cc] of replies){
-      const rres = applyMove(nb, rr, cc, op);
-      if(!rres) continue;
-      if(hasExactFive(rres.board, op)){
-        oppWins = true;
-        break;
+      if(tmp.length && inside(rr,cc) && b[rr][cc]===col){
+        for(const p of tmp) out.push(p);
       }
     }
-    if(!oppWins) safe.add(`${r},${c}`);
+    return out;
   }
-  return safe;
-}
 
-/* =========================
-   Game flow
-========================= */
-let isCpuThinking = false;
-
-function isHumanTurn(){
-  if(game.mode !== "cpu") return true; // in pvp, both are human
-  return game.turn === game.humanCol;
-}
-
-function maybeEndAfterMove(){
-  if(hasExactFive(game.board, BLACK)){
-    setOver(BLACK);
-    return true;
+  function applyMove(b, r, c, col){
+    if(!inside(r,c)) return null;
+    if(b[r][c]!==EMPTY) return null;
+    const f = flips(b,r,c,col);
+    const nb = cloneBoard(b);
+    nb[r][c] = col;
+    for(const [rr,cc] of f) nb[rr][cc]=col;
+    return { board: nb, flipped: f };
   }
-  if(hasExactFive(game.board, WHITE)){
-    setOver(WHITE);
-    return true;
-  }
-  if(legalMoves(game.board).length===0){
-    game.over = true; game.winner = null;
-    return true;
-  }
-  return false;
-}
 
-function playAt(r,c){
-  if(game.over) return;
-  if(isCpuThinking) return;
-
-  // in cpu mode, ignore taps when it's CPU's turn
-  if(game.mode==="cpu" && game.turn===game.cpuCol) return;
-
-  const res = applyMove(game.board, r,c, game.turn);
-  if(!res) return;
-
-  game.board = res.board;
-
-  // record
-  game.turn = opp(game.turn);
-  maybeEndAfterMove();
-  pushHistory();
-  updateUI();
-
-  maybeCpuMove();
-}
-
-function undo(){
-  if(isCpuThinking) return;
-  if(game.history.length<=1) return;
-
-  if(game.mode==="cpu"){
-    // undo one full pair if possible: (human + cpu)
-    // If last move was by human (shouldn't happen), still undo up to 2 safely.
-    popHistory(2);
-  }else{
-    popHistory(1);
-  }
-  updateUI();
-}
-
-btnNew.addEventListener("click", ()=> newGame());
-btnUndo.addEventListener("click", ()=> undo());
-elMode.addEventListener("change", ()=>{
-  // hide/show controls already handled by updateUI
-  newGame();
-});
-elHumanColor.addEventListener("change", ()=> newGame());
-elDiff.addEventListener("change", ()=> {/* keep current, applies to next cpu move */});
-elShowSafe.addEventListener("change", ()=> draw());
-
-canvas.addEventListener("click", (ev)=>{
-  const rect = canvas.getBoundingClientRect();
-  const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
-  const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
-  const rc = screenToRC(x,y);
-  if(!rc) return;
-  playAt(rc.r, rc.c);
-});
-canvas.addEventListener("touchend", (ev)=>{
-  // for iOS: touchend gives last touch point
-  const t = ev.changedTouches[0];
-  if(!t) return;
-  const rect = canvas.getBoundingClientRect();
-  const x = (t.clientX - rect.left) * (canvas.width / rect.width);
-  const y = (t.clientY - rect.top) * (canvas.height / rect.height);
-  const rc = screenToRC(x,y);
-  if(!rc) return;
-  playAt(rc.r, rc.c);
-});
-
-/* =========================
-   CPU AI (easy/medium/strong)
-   - strong uses iterative deepening alpha-beta with exact-five win
-   - time budget schedule (strong):
-       <=6th ply : 3s
-       <=10th ply: 10s
-       else      : 30s
-   - show "thinking..." if >3s
-========================= */
-
-function timeBudgetMs(){
-  const stones = boardCount(game.board).stones;
-  const ply = stones + 1; // next move number (rough)
-  const d = elDiff.value;
-  if(d==="easy") return 200;         // quick
-  if(d==="medium") return 1200;      // moderate
-  // strong schedule
-  if(ply <= 6) return 3000;
-  if(ply <= 10) return 10000;
-  return 30000;
-}
-
-function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-function nowMs(){ return performance.now(); }
-
-async function maybeCpuMove(){
-  if(game.mode!=="cpu") return;
-  if(game.over) return;
-  if(game.turn !== game.cpuCol) return;
-
-  // CPU turn
-  isCpuThinking = true;
-  updateUI();
-
-  const budget = timeBudgetMs();
-  const thinkLabelTimer = setTimeout(()=>{
-    // show only if actually thinking > 3s
-    showThinking(true);
-  }, 3000);
-
-  try{
-    const move = await pickCpuMove(game.board, game.turn, budget, elDiff.value);
-    clearTimeout(thinkLabelTimer);
-    showThinking(false);
-
-    if(game.over){ isCpuThinking=false; updateUI(); return; }
-
-    if(move){
-      const res = applyMove(game.board, move.r, move.c, game.turn);
-      if(res){
-        game.board = res.board;
+  function legalMoves(b){
+    const m=[];
+    for(let r=0;r<SIZE;r++){
+      for(let c=0;c<SIZE;c++){
+        if(b[r][c]===EMPTY) m.push([r,c]);
       }
     }
-    game.turn = opp(game.turn);
-    maybeEndAfterMove();
-    pushHistory();
-  } finally {
-    clearTimeout(thinkLabelTimer);
-    showThinking(false);
-    isCpuThinking = false;
-    updateUI();
-  }
-}
-
-function immediateWinMove(b, col){
-  const moves = legalMoves(b);
-  for(const [r,c] of moves){
-    const res = applyMove(b,r,c,col);
-    if(!res) continue;
-    if(hasExactFive(res.board, col)) return {r,c};
-  }
-  return null;
-}
-
-function blockOpponentWinMove(b, col){
-  const op = opp(col);
-  const moves = legalMoves(b);
-  for(const [r,c] of moves){
-    const res = applyMove(b,r,c,op);
-    if(!res) continue;
-    if(hasExactFive(res.board, op)) return {r,c}; // place here to block
-  }
-  return null;
-}
-
-// Evaluation: lightweight but strong-enough for 7x7
-function evalPos(b, me){
-  const op = opp(me);
-  if(hasExactFive(b, me)) return 1e15;
-  if(hasExactFive(b, op)) return -1e15;
-
-  // center preference + line potentials (with exact-five caution)
-  let score = 0;
-
-  // center
-  for(let r=0;r<SIZE;r++){
-    for(let c=0;c<SIZE;c++){
-      const v=b[r][c];
-      if(v===EMPTY) continue;
-      const cd = Math.abs(r-3)+Math.abs(c-3);
-      const w = 6 - cd;
-      score += (v===me ? +w : -w);
-    }
+    return m;
   }
 
-  function lineFeature(b, r, c, col, dr, dc){
-    let a=0, rr=r+dr, cc=c+dc;
-    while(inside(rr,cc) && b[rr][cc]===col){ a++; rr+=dr; cc+=dc; }
-    const end1 = (inside(rr,cc) && b[rr][cc]===EMPTY) ? 1 : 0;
-
-    let bcnt=0; rr=r-dr; cc=c-dc;
-    while(inside(rr,cc) && b[rr][cc]===col){ bcnt++; rr-=dr; cc-=dc; }
-    const end2 = (inside(rr,cc) && b[rr][cc]===EMPTY) ? 1 : 0;
-    return {len:1+a+bcnt, open:end1+end2};
-  }
-
-  function add(col, sign){
+  /* =========================
+     Win condition: exact five
+     + return line for drawing
+  ========================= */
+  function findExactFiveLine(b, col){
     for(let r=0;r<SIZE;r++){
       for(let c=0;c<SIZE;c++){
         if(b[r][c]!==col) continue;
+
         for(const [dr,dc] of checkDirs){
-          const f = lineFeature(b,r,c,col,dr,dc);
-          // exact-five: long chains aren't directly winning; keep weights moderate
-          if(f.len>=4){
-            score += sign * (f.open===2 ? 700000 : f.open===1 ? 160000 : 24000);
-          }else if(f.len===3){
-            score += sign * (f.open===2 ? 28000 : f.open===1 ? 7600 : 700);
-          }else if(f.len===2){
-            score += sign * (f.open===2 ? 950 : f.open===1 ? 240 : 28);
+          const pr=r-dr, pc=c-dc;
+          if(inside(pr,pc) && b[pr][pc]===col) continue; // not a start
+
+          // check 5
+          let ok=true;
+          for(let k=0;k<5;k++){
+            const rr=r+dr*k, cc=c+dc*k;
+            if(!inside(rr,cc) || b[rr][cc]!==col){ ok=false; break; }
           }
+          if(!ok) continue;
+
+          // 6th must NOT be same color
+          const nr=r+dr*5, nc=c+dc*5;
+          if(inside(nr,nc) && b[nr][nc]===col) continue;
+
+          return { from:{r,c}, to:{ r:r+dr*4, c:c+dc*4 }, col };
         }
       }
     }
+    return null;
+  }
+  const hasExactFive = (b,col) => !!findExactFiveLine(b,col);
+
+  /* =========================
+     UI / State
+  ========================= */
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
+
+  const elMode = document.getElementById("mode");
+  const elHumanColor = document.getElementById("humanColor");
+  const elDiff = document.getElementById("difficulty");
+  const wrapHuman = document.getElementById("cpuColorWrap");
+  const wrapDiff = document.getElementById("difficultyWrap");
+  const elShowSafe = document.getElementById("showSafe");
+
+  const btnNew = document.getElementById("newGame");
+  const btnUndo = document.getElementById("undo");
+
+  const turnText = document.getElementById("turnText");
+  const resultText = document.getElementById("resultText");
+  const countText = document.getElementById("countText");
+
+  const thinkingOverlay = document.getElementById("thinking");
+  const showThinking = on => (thinkingOverlay.style.display = on ? "flex" : "none");
+
+  let game = null;
+  let isCpuThinking = false;
+
+  const colorName = c => (c===BLACK ? "黒" : "白");
+  const currentTurnName = () => (game.turn===BLACK ? "黒番" : "白番");
+
+  function isHumanTurn(){
+    if(game.mode !== "cpu") return true;
+    return game.turn === game.humanCol;
   }
 
-  add(me, +1);
-  add(op, -1);
+  function pushHistory(){
+    game.history.push({
+      board: cloneBoard(game.board),
+      turn: game.turn,
+      over: game.over,
+      winner: game.winner,
+      winLine: game.winLine ? JSON.parse(JSON.stringify(game.winLine)) : null
+    });
+  }
 
-  // immediate threats count (0/1/2)
-  const myWin = countImmediateExactWins(b, me);
-  const opWin = countImmediateExactWins(b, op);
-  if(myWin>=2) score += 5e8;
-  else if(myWin===1) score += 8e6;
-  if(opWin>=2) score -= 6e8;
-  else if(opWin===1) score -= 1.2e7;
-
-  return score;
-}
-
-function countImmediateExactWins(b, col){
-  let cnt=0;
-  for(const [r,c] of legalMoves(b)){
-    const res = applyMove(b,r,c,col);
-    if(!res) continue;
-    if(hasExactFive(res.board, col)){
-      cnt++;
-      if(cnt>=2) return 2;
+  function popHistory(steps=1){
+    while(steps-- > 0 && game.history.length > 1){
+      game.history.pop();
     }
+    const last = game.history[game.history.length-1];
+    game.board = cloneBoard(last.board);
+    game.turn = last.turn;
+    game.over = last.over;
+    game.winner = last.winner;
+    game.winLine = last.winLine;
   }
-  return cnt;
-}
 
-// Candidate moves near existing stones for speed
-function candidateMoves(b, radius){
-  const {stones} = boardCount(b);
-  if(stones===0){
-    return [[3,3],[3,2],[2,3],[3,4],[4,3],[2,2],[4,4],[2,4],[4,2]];
+  function updateUI(){
+    if(elMode.value === "cpu"){
+      wrapHuman.style.display = "";
+      wrapDiff.style.display = "";
+    }else{
+      wrapHuman.style.display = "none";
+      wrapDiff.style.display = "none";
+    }
+
+    turnText.textContent = game.over ? "対局終了" : currentTurnName();
+    resultText.textContent = game.over
+      ? (game.winner ? `（${colorName(game.winner)}の勝ち）` : "（引き分け）")
+      : "";
+
+    const {bc,wc,stones} = boardCount(game.board);
+    countText.textContent = `黒: ${bc} / 白: ${wc}　手数: ${stones}`;
+
+    btnUndo.disabled = (game.history.length<=1) || isCpuThinking;
+    btnNew.disabled = isCpuThinking;
+
+    draw();
   }
-  if(stones>=36) return legalMoves(b);
 
-  const set = new Set();
-  for(let r=0;r<SIZE;r++){
+  /* =========================
+     Drawing
+  ========================= */
+  function draw(){
+    const W = canvas.width, H=canvas.height;
+    ctx.clearRect(0,0,W,H);
+
+    const pad = 50;
+    const grid = (W - 2*pad) / (SIZE-1);
+    const ox = pad, oy = pad;
+
+    // grid
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(0,0,0,.35)";
+    for(let i=0;i<SIZE;i++){
+      ctx.beginPath();
+      ctx.moveTo(ox, oy + i*grid);
+      ctx.lineTo(ox + (SIZE-1)*grid, oy + i*grid);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(ox + i*grid, oy);
+      ctx.lineTo(ox + i*grid, oy + (SIZE-1)*grid);
+      ctx.stroke();
+    }
+
+    // coords
+    ctx.fillStyle = "rgba(0,0,0,.45)";
+    ctx.font = "14px system-ui";
     for(let c=0;c<SIZE;c++){
-      if(b[r][c]===EMPTY) continue;
-      for(let dr=-radius; dr<=radius; dr++){
-        for(let dc=-radius; dc<=radius; dc++){
-          const rr=r+dr, cc=c+dc;
-          if(inside(rr,cc) && b[rr][cc]===EMPTY){
-            set.add(rr*10+cc);
+      ctx.fillText(String.fromCharCode(97+c), ox + c*grid - 4, oy - 18);
+    }
+    for(let r=0;r<SIZE;r++){
+      ctx.fillText(String(1+r), ox - 22, oy + r*grid + 5);
+    }
+
+    // safe moves overlay (human turn only)
+    let safeSet = null;
+    if(elShowSafe.checked && !game.over && isHumanTurn()){
+      safeSet = computeSafeMoves(game.board, game.turn);
+    }
+    if(safeSet){
+      for(const key of safeSet){
+        const [r,c] = key.split(",").map(Number);
+        const x = ox + c*grid;
+        const y = oy + r*grid;
+        ctx.beginPath();
+        ctx.arc(x,y,8,0,Math.PI*2);
+        ctx.fillStyle = (game.turn===BLACK) ? "rgba(58,160,255,.95)" : "rgba(255,82,82,.95)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,.25)";
+        ctx.stroke();
+      }
+    }
+
+    // stones
+    for(let r=0;r<SIZE;r++){
+      for(let c=0;c<SIZE;c++){
+        const v = game.board[r][c];
+        if(v===EMPTY) continue;
+        const x = ox + c*grid;
+        const y = oy + r*grid;
+
+        ctx.beginPath();
+        ctx.arc(x+2,y+3,20,0,Math.PI*2);
+        ctx.fillStyle = "rgba(0,0,0,.22)";
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(x,y,20,0,Math.PI*2);
+        if(v===BLACK){
+          const g = ctx.createRadialGradient(x-6,y-6,4, x,y,24);
+          g.addColorStop(0,"#444");
+          g.addColorStop(1,"#070707");
+          ctx.fillStyle = g;
+        }else{
+          const g = ctx.createRadialGradient(x-6,y-6,4, x,y,24);
+          g.addColorStop(0,"#fff");
+          g.addColorStop(1,"#d9d9d9");
+          ctx.fillStyle = g;
+        }
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,.25)";
+        ctx.stroke();
+      }
+    }
+
+    // WIN LINE (solid only)
+    if(game.over && game.winLine){
+      const {from,to,col} = game.winLine;
+      const x1 = ox + from.c*grid;
+      const y1 = oy + from.r*grid;
+      const x2 = ox + to.c*grid;
+      const y2 = oy + to.r*grid;
+
+      const main = (col===BLACK) ? "rgba(58,160,255,.95)" : "rgba(255,82,82,.95)";
+
+      ctx.lineCap = "round";
+
+      // shadow
+      ctx.beginPath();
+      ctx.moveTo(x1,y1);
+      ctx.lineTo(x2,y2);
+      ctx.lineWidth = 12;
+      ctx.strokeStyle = "rgba(0,0,0,.25)";
+      ctx.stroke();
+
+      // main
+      ctx.beginPath();
+      ctx.moveTo(x1,y1);
+      ctx.lineTo(x2,y2);
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = main;
+      ctx.stroke();
+    }
+
+    // end overlay
+    if(game.over){
+      ctx.fillStyle = "rgba(0,0,0,.25)";
+      ctx.fillRect(0, H/2-34, W, 68);
+      ctx.fillStyle = "rgba(255,255,255,.95)";
+      ctx.font = "bold 22px system-ui";
+      const t = game.winner ? `${colorName(game.winner)}の勝ち` : "引き分け";
+      const w = ctx.measureText(t).width;
+      ctx.fillText(t, (W-w)/2, H/2+8);
+    }
+  }
+
+  function screenToRC(x,y){
+    const W = canvas.width;
+    const pad = 50;
+    const grid = (W - 2*pad) / (SIZE-1);
+    const ox = pad, oy = pad;
+
+    const c = Math.round((x - ox)/grid);
+    const r = Math.round((y - oy)/grid);
+    if(!inside(r,c)) return null;
+
+    const ix = ox + c*grid;
+    const iy = oy + r*grid;
+    const dist = Math.hypot(x-ix,y-iy);
+    if(dist > grid*0.38) return null;
+
+    return {r,c};
+  }
+
+  /* =========================
+     Safe move display
+  ========================= */
+  function computeSafeMoves(b, turnCol){
+    const moves = legalMoves(b);
+    const safe = new Set();
+    for(const [r,c] of moves){
+      const res = applyMove(b,r,c,turnCol);
+      if(!res) continue;
+      const nb = res.board;
+
+      if(hasExactFive(nb, turnCol)){
+        safe.add(`${r},${c}`);
+        continue;
+      }
+
+      const op = opp(turnCol);
+      const replies = legalMoves(nb);
+      let oppWins = false;
+      for(const [rr,cc] of replies){
+        const rres = applyMove(nb, rr, cc, op);
+        if(!rres) continue;
+        if(hasExactFive(rres.board, op)){
+          oppWins = true;
+          break;
+        }
+      }
+      if(!oppWins) safe.add(`${r},${c}`);
+    }
+    return safe;
+  }
+
+  /* =========================
+     Game flow
+  ========================= */
+  function maybeEndAfterMove(){
+    const bl = findExactFiveLine(game.board, BLACK);
+    if(bl){
+      game.over = true; game.winner = BLACK; game.winLine = bl;
+      return true;
+    }
+    const wl = findExactFiveLine(game.board, WHITE);
+    if(wl){
+      game.over = true; game.winner = WHITE; game.winLine = wl;
+      return true;
+    }
+    if(legalMoves(game.board).length===0){
+      game.over = true; game.winner = null; game.winLine = null;
+      return true;
+    }
+    return false;
+  }
+
+  function playAt(r,c){
+    if(game.over) return;
+    if(isCpuThinking) return;
+    if(game.mode==="cpu" && game.turn===game.cpuCol) return;
+
+    const res = applyMove(game.board, r,c, game.turn);
+    if(!res) return;
+
+    game.board = res.board;
+    game.turn = opp(game.turn);
+
+    maybeEndAfterMove();
+    pushHistory();
+    updateUI();
+    maybeCpuMove();
+  }
+
+  function undo(){
+    if(isCpuThinking) return;
+    if(game.history.length<=1) return;
+
+    if(game.mode==="cpu") popHistory(2);
+    else popHistory(1);
+
+    updateUI();
+  }
+
+  function newGame(){
+    const mode = elMode.value;
+    const humanIsBlack = (elHumanColor.value === "black");
+    const humanCol = humanIsBlack ? BLACK : WHITE;
+    const cpuCol = opp(humanCol);
+
+    game = {
+      mode,
+      board: makeBoard(),
+      turn: BLACK,
+      over: false,
+      winner: null,
+      winLine: null,
+      history: [],
+      humanCol,
+      cpuCol,
+    };
+
+    elShowSafe.checked = false;
+    pushHistory();
+    updateUI();
+    maybeCpuMove();
+  }
+
+  /* =========================
+     CPU AI + min delay (0.5s)
+  ========================= */
+  const sleep = ms => new Promise(r=>setTimeout(r,ms));
+  const nowMs = () => performance.now();
+
+  function timeBudgetMs(){
+    const stones = boardCount(game.board).stones;
+    const ply = stones + 1;
+    const d = elDiff.value;
+    if(d==="easy") return 200;
+    if(d==="medium") return 1200;
+    if(ply <= 6) return 3000;
+    if(ply <= 10) return 10000;
+    return 30000;
+  }
+
+  async function maybeCpuMove(){
+    if(game.mode!=="cpu") return;
+    if(game.over) return;
+    if(game.turn !== game.cpuCol) return;
+
+    isCpuThinking = true;
+    updateUI();
+
+    const budget = timeBudgetMs();
+    const cpuTurnStart = nowMs();
+
+    const thinkLabelTimer = setTimeout(()=>{ showThinking(true); }, 3000);
+
+    try{
+      const move = await pickCpuMove(game.board, game.turn, budget, elDiff.value);
+
+      // minimum tempo: 0.5s
+      const elapsed = nowMs() - cpuTurnStart;
+      if(elapsed < 500) await sleep(500 - elapsed);
+
+      clearTimeout(thinkLabelTimer);
+      showThinking(false);
+
+      if(game.over) return;
+
+      if(move){
+        const res = applyMove(game.board, move.r, move.c, game.turn);
+        if(res) game.board = res.board;
+      }
+      game.turn = opp(game.turn);
+
+      maybeEndAfterMove();
+      pushHistory();
+    } finally {
+      clearTimeout(thinkLabelTimer);
+      showThinking(false);
+      isCpuThinking = false;
+      updateUI();
+    }
+  }
+
+  function immediateWinMove(b, col){
+    for(const [r,c] of legalMoves(b)){
+      const res = applyMove(b,r,c,col);
+      if(res && hasExactFive(res.board, col)) return {r,c};
+    }
+    return null;
+  }
+  function blockOpponentWinMove(b, col){
+    const op = opp(col);
+    for(const [r,c] of legalMoves(b)){
+      const res = applyMove(b,r,c,op);
+      if(res && hasExactFive(res.board, op)) return {r,c};
+    }
+    return null;
+  }
+
+  function countImmediateExactWins(b, col){
+    let cnt=0;
+    for(const [r,c] of legalMoves(b)){
+      const res = applyMove(b,r,c,col);
+      if(res && hasExactFive(res.board, col)){
+        cnt++;
+        if(cnt>=2) return 2;
+      }
+    }
+    return cnt;
+  }
+
+  function evalPos(b, me){
+    const op = opp(me);
+    if(hasExactFive(b, me)) return 1e15;
+    if(hasExactFive(b, op)) return -1e15;
+
+    let score = 0;
+
+    // center preference
+    for(let r=0;r<SIZE;r++){
+      for(let c=0;c<SIZE;c++){
+        const v=b[r][c];
+        if(v===EMPTY) continue;
+        const cd = Math.abs(r-3)+Math.abs(c-3);
+        const w = 6 - cd;
+        score += (v===me ? +w : -w);
+      }
+    }
+
+    function lineFeature(r, c, col, dr, dc){
+      let a=0, rr=r+dr, cc=c+dc;
+      while(inside(rr,cc) && b[rr][cc]===col){ a++; rr+=dr; cc+=dc; }
+      const end1 = (inside(rr,cc) && b[rr][cc]===EMPTY) ? 1 : 0;
+
+      let bcnt=0; rr=r-dr; cc=c-dc;
+      while(inside(rr,cc) && b[rr][cc]===col){ bcnt++; rr-=dr; cc-=dc; }
+      const end2 = (inside(rr,cc) && b[rr][cc]===EMPTY) ? 1 : 0;
+
+      return {len:1+a+bcnt, open:end1+end2};
+    }
+
+    function add(col, sign){
+      for(let r=0;r<SIZE;r++){
+        for(let c=0;c<SIZE;c++){
+          if(b[r][c]!==col) continue;
+          for(const [dr,dc] of checkDirs){
+            const f = lineFeature(r,c,col,dr,dc);
+            if(f.len>=4){
+              score += sign * (f.open===2 ? 700000 : f.open===1 ? 160000 : 24000);
+            }else if(f.len===3){
+              score += sign * (f.open===2 ? 28000 : f.open===1 ? 7600 : 700);
+            }else if(f.len===2){
+              score += sign * (f.open===2 ? 950 : f.open===1 ? 240 : 28);
+            }
           }
         }
       }
     }
-  }
-  const out=[];
-  for(const v of set){
-    out.push([Math.floor(v/10), v%10]);
-  }
-  return out;
-}
+    add(me,+1); add(op,-1);
 
-function orderMoves(b, col, maxCand){
-  const {stones} = boardCount(b);
-  const radius = stones<=10 ? 3 : 4;
+    const myWin = countImmediateExactWins(b, me);
+    const opWin = countImmediateExactWins(b, op);
+    if(myWin>=2) score += 5e8;
+    else if(myWin===1) score += 8e6;
+    if(opWin>=2) score -= 6e8;
+    else if(opWin===1) score -= 1.2e7;
 
-  const cand = candidateMoves(b, radius);
-  const op = opp(col);
-
-  // squares that block opponent's immediate win
-  const oppWinSet = new Set();
-  for(const [r,c] of cand){
-    const t = applyMove(b,r,c,op);
-    if(t && hasExactFive(t.board, op)) oppWinSet.add(r*10+c);
+    return score;
   }
 
-  const scored = [];
-  for(const [r,c] of cand){
-    const t = applyMove(b,r,c,col);
-    if(!t) continue;
+  function candidateMoves(b, radius){
+    const {stones} = boardCount(b);
+    if(stones===0){
+      return [[3,3],[3,2],[2,3],[3,4],[4,3],[2,2],[4,4],[2,4],[4,2]];
+    }
+    if(stones>=36) return legalMoves(b);
 
-    const winNow = hasExactFive(t.board, col) ? 1 : 0;
-    const blocks = oppWinSet.has(r*10+c) ? 1 : 0;
-
-    // fork check (cheap)
-    const forks = countImmediateExactWins(t.board, col);
-    const forkBonus = forks>=2 ? 1 : forks===1 ? 0.2 : 0;
-
-    const rough = evalPos(t.board, col);
-
-    const pri = winNow*1e18 + blocks*8e17 + forkBonus*4e16 + rough;
-    scored.push({r,c,pri});
-  }
-  scored.sort((a,b)=> b.pri - a.pri);
-  return scored.slice(0, maxCand).map(x=>({r:x.r,c:x.c}));
-}
-
-async function pickCpuMove(b, col, budgetMs, difficulty){
-  // quick tactics first (all levels)
-  const win = immediateWinMove(b, col);
-  if(win) return win;
-  const block = blockOpponentWinMove(b, col);
-  if(block) return block;
-
-  if(difficulty==="easy"){
-    // pick from top few ordered moves, with randomness
-    const moves = orderMoves(b, col, 10);
-    if(!moves.length) return null;
-    return moves[Math.floor(Math.random()*Math.min(3,moves.length))];
+    const set = new Set();
+    for(let r=0;r<SIZE;r++){
+      for(let c=0;c<SIZE;c++){
+        if(b[r][c]===EMPTY) continue;
+        for(let dr=-radius; dr<=radius; dr++){
+          for(let dc=-radius; dc<=radius; dc++){
+            const rr=r+dr, cc=c+dc;
+            if(inside(rr,cc) && b[rr][cc]===EMPTY){
+              set.add(rr*10+cc);
+            }
+          }
+        }
+      }
+    }
+    const out=[];
+    for(const v of set) out.push([Math.floor(v/10), v%10]);
+    return out;
   }
 
-  if(difficulty==="medium"){
-    // shallow minimax (depth 3-4) with small budget
-    return await iterativeDeepening(b, col, Math.min(budgetMs, 2500), 8, 10);
+  function orderMoves(b, col, maxCand){
+    const {stones} = boardCount(b);
+    const radius = stones<=10 ? 3 : 4;
+    const cand = candidateMoves(b, radius);
+    const op = opp(col);
+
+    const oppWinSet = new Set();
+    for(const [r,c] of cand){
+      const t = applyMove(b,r,c,op);
+      if(t && hasExactFive(t.board, op)) oppWinSet.add(r*10+c);
+    }
+
+    const scored = [];
+    for(const [r,c] of cand){
+      const t = applyMove(b,r,c,col);
+      if(!t) continue;
+
+      const winNow = hasExactFive(t.board, col) ? 1 : 0;
+      const blocks = oppWinSet.has(r*10+c) ? 1 : 0;
+
+      const forks = countImmediateExactWins(t.board, col);
+      const forkBonus = forks>=2 ? 1 : forks===1 ? 0.2 : 0;
+
+      const rough = evalPos(t.board, col);
+      const pri = winNow*1e18 + blocks*8e17 + forkBonus*4e16 + rough;
+      scored.push({r,c,pri});
+    }
+    scored.sort((a,b)=> b.pri - a.pri);
+    return scored.slice(0, maxCand).map(x=>({r:x.r,c:x.c}));
   }
 
-  // strong
-  // more candidates, deeper search within time budget
-  const {stones} = boardCount(b);
-  const maxCand = stones<=10 ? 18 : 26;
-  return await iterativeDeepening(b, col, budgetMs, maxCand, 18);
-}
+  async function pickCpuMove(b, col, budgetMs, difficulty){
+    const win = immediateWinMove(b, col);
+    if(win) return win;
+    const block = blockOpponentWinMove(b, col);
+    if(block) return block;
 
-/* =========================
-   Alpha-beta + Iterative deepening
-========================= */
-function terminalScore(b, me){
-  const op = opp(me);
-  if(hasExactFive(b, me)) return 1e15;
-  if(hasExactFive(b, op)) return -1e15;
-  if(legalMoves(b).length===0) return 0;
-  return null;
-}
+    if(difficulty==="easy"){
+      const moves = orderMoves(b, col, 10);
+      if(!moves.length) return null;
+      return moves[Math.floor(Math.random()*Math.min(3,moves.length))];
+    }
+    if(difficulty==="medium"){
+      return await iterativeDeepening(b, col, Math.min(budgetMs, 2500), 8, 10);
+    }
+    const {stones} = boardCount(b);
+    const maxCand = stones<=10 ? 18 : 26;
+    return await iterativeDeepening(b, col, budgetMs, maxCand, 18);
+  }
 
-async function iterativeDeepening(rootBoard, me, budgetMs, maxCand, depthCap){
-  const start = nowMs();
-  const deadline = start + budgetMs;
+  function terminalScore(b, me){
+    const op = opp(me);
+    if(hasExactFive(b, me)) return 1e15;
+    if(hasExactFive(b, op)) return -1e15;
+    if(legalMoves(b).length===0) return 0;
+    return null;
+  }
 
-  let bestMove = null;
+  async function iterativeDeepening(rootBoard, me, budgetMs, maxCand, depthCap){
+    const start = nowMs();
+    const deadline = start + budgetMs;
+    let bestMove = null;
 
-  // iterative
-  for(let depth=3; depth<=depthCap; depth++){
-    if(nowMs() > deadline) break;
+    for(let depth=3; depth<=depthCap; depth++){
+      if(nowMs() > deadline) break;
 
-    const moves = orderMoves(rootBoard, me, maxCand);
-    if(!moves.length) break;
+      const moves = orderMoves(rootBoard, me, maxCand);
+      if(!moves.length) break;
 
-    let localBest = bestMove || moves[0];
-    let localBestVal = -Infinity;
+      let localBest = bestMove || moves[0];
+      let localBestVal = -Infinity;
+
+      for(const m of moves){
+        if(nowMs() > deadline) break;
+        const t = applyMove(rootBoard, m.r, m.c, me);
+        if(!t) continue;
+
+        const val = await alphabeta(t.board, depth-1, -Infinity, Infinity, me, opp(me), deadline);
+        if(val > localBestVal){
+          localBestVal = val;
+          localBest = m;
+        }
+        if(depth>=5) await new Promise(r=>setTimeout(r,0));
+      }
+
+      bestMove = localBest;
+    }
+    return bestMove;
+  }
+
+  async function alphabeta(b, depth, alpha, beta, me, turn, deadline){
+    if(nowMs() > deadline) return evalPos(b, me);
+
+    const term = terminalScore(b, me);
+    if(term !== null) return term;
+
+    if(depth===0){
+      const myWin = countImmediateExactWins(b, me);
+      const opWin = countImmediateExactWins(b, opp(me));
+      if(myWin>=1) return 9e14;
+      if(opWin>=1) return -9e14;
+      return evalPos(b, me);
+    }
+
+    const maximizing = (turn===me);
+    let best = maximizing ? -Infinity : Infinity;
+
+    const {stones} = boardCount(b);
+    const maxCand = stones<=10 ? 18 : 26;
+    const moves = orderMoves(b, turn, maxCand);
+    if(!moves.length) return evalPos(b, me);
 
     for(const m of moves){
       if(nowMs() > deadline) break;
-      const t = applyMove(rootBoard, m.r, m.c, me);
+      const t = applyMove(b, m.r, m.c, turn);
       if(!t) continue;
 
-      const val = await alphabeta(t.board, depth-1, -Infinity, Infinity, me, opp(me), deadline);
-      if(val > localBestVal){
-        localBestVal = val;
-        localBest = m;
+      const val = await alphabeta(t.board, depth-1, alpha, beta, me, opp(turn), deadline);
+
+      if(maximizing){
+        if(val > best) best = val;
+        if(best > alpha) alpha = best;
+      }else{
+        if(val < best) best = val;
+        if(best < beta) beta = best;
       }
-
-      // yield to keep UI responsive
-      if(depth>=5) await new Promise(r=>setTimeout(r,0));
+      if(beta <= alpha) break;
     }
-
-    bestMove = localBest;
+    return best;
   }
 
-  return bestMove;
-}
+  /* =========================
+     Events
+  ========================= */
+  btnNew.addEventListener("click", ()=> newGame());
+  btnUndo.addEventListener("click", ()=> undo());
+  elMode.addEventListener("change", ()=> newGame());
+  elHumanColor.addEventListener("change", ()=> newGame());
+  elDiff.addEventListener("change", ()=> {});
+  elShowSafe.addEventListener("change", ()=> draw());
 
-async function alphabeta(b, depth, alpha, beta, me, turn, deadline){
-  if(nowMs() > deadline) return evalPos(b, me);
+  canvas.addEventListener("click", (ev)=>{
+    const rect = canvas.getBoundingClientRect();
+    const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const rc = screenToRC(x,y);
+    if(!rc) return;
+    playAt(rc.r, rc.c);
+  });
+  canvas.addEventListener("touchend", (ev)=>{
+    const t = ev.changedTouches[0];
+    if(!t) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (t.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (t.clientY - rect.top) * (canvas.height / rect.height);
+    const rc = screenToRC(x,y);
+    if(!rc) return;
+    playAt(rc.r, rc.c);
+  });
 
-  const term = terminalScore(b, me);
-  if(term !== null) return term;
-
-  if(depth===0){
-    // horizon threat bias
-    const myWin = countImmediateExactWins(b, me);
-    const opWin = countImmediateExactWins(b, opp(me));
-    if(myWin>=1) return 9e14;
-    if(opWin>=1) return -9e14;
-    return evalPos(b, me);
-  }
-
-  const maximizing = (turn===me);
-  let best = maximizing ? -Infinity : Infinity;
-
-  const {stones} = boardCount(b);
-  const maxCand = stones<=10 ? 18 : 26;
-  const moves = orderMoves(b, turn, maxCand);
-
-  if(!moves.length) return evalPos(b, me);
-
-  for(const m of moves){
-    if(nowMs() > deadline) break;
-    const t = applyMove(b, m.r, m.c, turn);
-    if(!t) continue;
-
-    const val = await alphabeta(t.board, depth-1, alpha, beta, me, opp(turn), deadline);
-
-    if(maximizing){
-      if(val > best) best = val;
-      if(best > alpha) alpha = best;
-    }else{
-      if(val < best) best = val;
-      if(best < beta) beta = best;
-    }
-    if(beta <= alpha) break;
-  }
-
-  return best;
-}
-
-/* =========================
-   Init
-========================= */
-newGame();
-updateUI();
+  /* =========================
+     Init
+  ========================= */
+  newGame();
+})();
 </script>
 
 </body>
