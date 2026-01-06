@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>五目オセロ（交点 / 危険手ON-OFF）</title>
+<title>五目オセロ（交点 / 安全手OFF / CPU先後選択）</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <style>
@@ -14,7 +14,6 @@
   .controls{margin-bottom:10px}
   button,select{font-size:14px;margin-right:6px;padding:6px 10px}
 
-  /* 8x8マス盤の交点＝9x9 */
   .board{
     width:min(92vw,520px);
     aspect-ratio:1/1;
@@ -24,7 +23,6 @@
     border:2px solid #222;
   }
 
-  /* 交点セル */
   .pt{
     position:relative;
     display:flex;
@@ -34,7 +32,6 @@
     user-select:none;
     touch-action:manipulation;
   }
-  /* 盤面の線 */
   .pt::before{
     content:"";
     position:absolute;
@@ -45,10 +42,8 @@
     opacity:.9;
   }
 
-  /* 外周交点は置けない */
   .disabled{ cursor:not-allowed; opacity:.35; }
 
-  /* 石 */
   .disc{
     width:62%;
     height:62%;
@@ -61,7 +56,6 @@
   .black{background:#000;}
   .white{background:#fff;}
 
-  /* 空の交点の点 */
   .dot{
     width:10%;
     height:10%;
@@ -71,20 +65,18 @@
     z-index:2;
   }
 
-  /* 危険手：塗りつぶし丸（手番で色切替） */
-  .danger-fill{
+  /* 安全手（表示ON時のみ） */
+  .safe-fill{
     width:62%;
     height:62%;
     border-radius:50%;
     position:absolute;
     z-index:2;
-    opacity:.90;
-    box-shadow:0 2px 8px rgba(0,0,0,.25);
+    opacity:.85;
+    box-shadow:0 2px 8px rgba(0,0,0,.22);
   }
-  /* 白番の危険手＝黄色 */
-  .danger-yellow{ background:rgba(255,200,0,.95); }
-  /* 黒番の危険手＝青 */
-  .danger-blue{ background:rgba(0,90,255,.92); }
+  .safe-blue{ background:rgba(0,90,255,.92); } /* 黒番 */
+  .safe-red{  background:rgba(220,0,0,.92); } /* 白番 */
 
   .note{font-size:12px;opacity:.85;line-height:1.5;margin-top:8px}
 </style>
@@ -99,294 +91,199 @@
 
     <select id="mode">
       <option value="pvp">人 vs 人</option>
-      <option value="cpu">人 vs CPU（CPU=白）</option>
+      <option value="cpu">人 vs CPU</option>
     </select>
 
-    <button id="dangerToggleBtn">危険手：ON</button>
+    <!-- CPU戦のときだけ表示 -->
+    <select id="humanColor" title="CPU戦：あなたの色" style="display:none">
+      <option value="black">あなた：黒（先手）</option>
+      <option value="white">あなた：白（後手）</option>
+    </select>
+
+    <button id="safeToggleBtn">安全手：OFF</button>
   </div>
 
   <div id="board" class="board"></div>
 
   <div class="note">
-    ルール：交点に置く（外周交点は置けない）→挟んだ石は反転→反転後に自分色の五連で勝ち。<br>
-    危険手（塗り丸）：今そこに置くと、次の相手番で相手が即五連で勝てる可能性がある手。<br>
-    表示色：白番＝黄色、黒番＝青（ON/OFF切替可）
+    安全手（塗り丸）：今そこに置いても、次の相手番で相手が即五連で勝てない手。<br>
+    表示色：黒番＝青、白番＝赤（初期状態はOFF）<br>
+    CPU戦では<strong>CPU番の安全手は表示しません</strong>。
   </div>
 
 <script>
 (() => {
-  // 8x8マスの盤の交点は9x9
-  const N = 9;
-  // 置けるのは外周を除いた交点：1..7 の 7x7
-  const PLAY_MIN = 1;
-  const PLAY_MAX = 7;
+  const N=9, PLAY_MIN=1, PLAY_MAX=7;
+  const EMPTY=0, BLACK=1, WHITE=2;
+  const dirs=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+  const checkDirs=[[1,0],[0,1],[1,1],[1,-1]];
 
-  const EMPTY = 0, BLACK = 1, WHITE = 2;
-  const dirs = [
-    [-1,-1],[-1,0],[-1,1],
-    [0,-1],        [0,1],
-    [1,-1],[1,0],[1,1]
-  ];
-  const checkDirs = [[1,0],[0,1],[1,1],[1,-1]];
+  let board, turn, gameOver, history;
+  let showSafe = false; // デフォルトOFF
 
-  let board = makeEmpty();
-  let turn = BLACK;
-  let gameOver = false;
-  let history = [];
-  let showDanger = true;
+  const $board=document.getElementById("board");
+  const $status=document.getElementById("status");
+  const $mode=document.getElementById("mode");
+  const $humanColor=document.getElementById("humanColor");
+  const $safeBtn=document.getElementById("safeToggleBtn");
 
-  const $board = document.getElementById("board");
-  const $status = document.getElementById("status");
-  const $undoBtn = document.getElementById("undoBtn");
-  const $restartBtn = document.getElementById("restartBtn");
-  const $mode = document.getElementById("mode");
-  const $dangerBtn = document.getElementById("dangerToggleBtn");
+  const opp=c=>c===BLACK?WHITE:BLACK;
+  const inB=(r,c)=>r>=0&&r<N&&c>=0&&c<N;
+  const playable=(r,c)=>r>=PLAY_MIN&&r<=PLAY_MAX&&c>=PLAY_MIN&&c<=PLAY_MAX;
+  const clone=b=>b.map(r=>r.slice());
 
-  function makeEmpty() {
-    return Array.from({length:N}, ()=>Array(N).fill(EMPTY));
-  }
-  function cloneBoard(b){ return b.map(row => row.slice()); }
-  function opp(color){ return color === BLACK ? WHITE : BLACK; }
-  function inBounds(r,c){ return r>=0 && r<N && c>=0 && c<N; }
-  function isPlayable(r,c){ return r>=PLAY_MIN && r<=PLAY_MAX && c>=PLAY_MIN && c<=PLAY_MAX; }
+  const isCpuMode=()=> $mode.value==="cpu";
+  const human=()=> $humanColor.value==="black"?BLACK:WHITE;
+  const cpu=()=> opp(human());
+  const isHumanTurn=()=> !isCpuMode() || turn===human();
 
-  function pushHistory(){
-    history.push({ board: cloneBoard(board), turn, gameOver });
-  }
-  function popHistory(){
-    const s = history.pop();
-    if(!s) return false;
-    board = cloneBoard(s.board);
-    turn = s.turn;
-    gameOver = s.gameOver;
-    return true;
+  function updateHumanColorVisibility(){
+    $humanColor.style.display = isCpuMode() ? "" : "none";
   }
 
-  function flippableLine(b, r, c, color, dr, dc){
-    const o = opp(color);
-    let rr=r+dr, cc=c+dc;
-    const toFlip=[];
-    while(inBounds(rr,cc) && b[rr][cc]===o){
-      toFlip.push([rr,cc]);
-      rr+=dr; cc+=dc;
+  function init(){
+    board=Array.from({length:N},()=>Array(N).fill(EMPTY));
+    turn=BLACK; gameOver=false; history=[];
+    updateHumanColorVisibility();
+    render(); updateStatus(); maybeCpu();
+  }
+
+  function flips(b,r,c,col){
+    let f=[];
+    for(const[dR,dC]of dirs){
+      let x=r+dR,y=c+dC,tmp=[];
+      while(inB(x,y)&&b[x][y]===opp(col)){tmp.push([x,y]);x+=dR;y+=dC;}
+      if(tmp.length&&inB(x,y)&&b[x][y]===col)f=f.concat(tmp);
     }
-    if(toFlip.length>0 && inBounds(rr,cc) && b[rr][cc]===color) return toFlip;
-    return [];
+    return f;
   }
 
-  function allFlips(b, r, c, color){
-    let flips=[];
-    for(const [dr,dc] of dirs){
-      flips = flips.concat(flippableLine(b,r,c,color,dr,dc));
-    }
-    return flips;
-  }
-
-  function simulateMove(b, r, c, color){
-    if(!isPlayable(r,c)) return null;
-    if(b[r][c] !== EMPTY) return null;
-    const nb = cloneBoard(b);
-    nb[r][c] = color;
-    const flips = allFlips(nb, r, c, color);
-    for(const [rr,cc] of flips) nb[rr][cc] = color;
+  function sim(b,r,c,col){
+    if(!playable(r,c)||b[r][c]!==EMPTY)return null;
+    const nb=clone(b); nb[r][c]=col;
+    flips(nb,r,c,col).forEach(p=>nb[p[0]][p[1]]=col);
     return nb;
   }
 
-  function hasFive(b, color){
-    for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
-      for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
-        if(b[r][c] !== color) continue;
-        for(const [dr,dc] of checkDirs){
-          let cnt=1;
-          let rr=r+dr, cc=c+dc;
-          while(inBounds(rr,cc) && b[rr][cc]===color){
-            cnt++;
-            if(cnt>=5) return true;
-            rr+=dr; cc+=dc;
-          }
-        }
+  function hasFive(b,col){
+    for(let r=PLAY_MIN;r<=PLAY_MAX;r++)for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
+      if(b[r][c]!==col)continue;
+      for(const[dR,dC]of checkDirs){
+        let n=1,x=r+dR,y=c+dC;
+        while(inB(x,y)&&b[x][y]===col){if(++n>=5)return true;x+=dR;y+=dC;}
       }
     }
     return false;
   }
 
-  function legalMoves(b){
-    const moves=[];
-    for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
-      for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
-        if(b[r][c]===EMPTY) moves.push([r,c]);
-      }
-    }
-    return moves;
+  function legal(b){
+    let m=[];
+    for(let r=PLAY_MIN;r<=PLAY_MAX;r++)for(let c=PLAY_MIN;c<=PLAY_MAX;c++)
+      if(b[r][c]===EMPTY)m.push([r,c]);
+    return m;
   }
 
-  // 危険手：自分がそこに置いた後、相手に「即勝ち手」が1つでもある
-  function computeDangerMoves(b, color){
-    const dangers = new Set();
-    const moves = legalMoves(b);
-    const o = opp(color);
-
-    for(const [r,c] of moves){
-      const nb = simulateMove(b, r, c, color);
-      if(!nb) continue;
-
-      // 自分がその手で勝つなら危険手ではない
-      if(hasFive(nb, color)) continue;
-
-      // 相手の即勝ち手があるか
-      const om = legalMoves(nb);
-      let oppCanWin = false;
-      for(const [rr,cc] of om){
-        const nb2 = simulateMove(nb, rr, cc, o);
-        if(!nb2) continue;
-        if(hasFive(nb2, o)){ oppCanWin = true; break; }
+  function safeMoves(b,col){
+    const set=new Set(), o=opp(col);
+    for(const[r,c]of legal(b)){
+      const nb=sim(b,r,c,col);
+      if(!nb)continue;
+      if(hasFive(nb,col)){ set.add(`${r},${c}`); continue; }
+      let oppWin=false;
+      for(const[x,y]of legal(nb)){
+        const nb2=sim(nb,x,y,o);
+        if(nb2&&hasFive(nb2,o)){ oppWin=true; break; }
       }
-      if(oppCanWin) dangers.add(`${r},${c}`);
+      if(!oppWin)set.add(`${r},${c}`);
     }
-    return dangers;
+    return set;
   }
 
-  function updateStatus(text){
-    if(text){ $status.textContent = text; return; }
-    if(gameOver){ $status.textContent = "ゲーム終了"; return; }
-    $status.textContent =
-      (turn===BLACK?"黒の手番":"白の手番") + (isCpuMode() ? (turn===WHITE?"（CPU）":"（あなた）") : "");
+  function move(r,c){
+    if(gameOver||!playable(r,c)||board[r][c]!==EMPTY)return;
+    if(isCpuMode()&&!isHumanTurn())return;
+
+    history.push({board:clone(board),turn,gameOver});
+    board[r][c]=turn;
+    flips(board,r,c,turn).forEach(p=>board[p[0]][p[1]]=turn);
+
+    if(hasFive(board,turn)){ gameOver=true; render(); updateStatus(`${turn===BLACK?"黒":"白"}の勝ち！`); return; }
+    turn=opp(turn); render(); updateStatus(); maybeCpu();
   }
 
-  function isCpuMode(){ return $mode.value === "cpu"; }
-
-  function applyMove(r,c){
-    if(gameOver) return;
-    if(!isPlayable(r,c)) return;
-    if(board[r][c] !== EMPTY) return;
-
-    pushHistory();
-
-    board[r][c] = turn;
-    const flips = allFlips(board, r, c, turn);
-    for(const [rr,cc] of flips) board[rr][cc] = turn;
-
-    if(hasFive(board, turn)){
-      gameOver = true;
-      render();
-      updateStatus(turn===BLACK ? "黒の勝ち！（五連）" : "白の勝ち！（五連）");
-      return;
-    }
-
-    turn = opp(turn);
-    render();
-    updateStatus();
-
-    if(isCpuMode() && !gameOver && turn===WHITE){
-      setTimeout(cpuMove, 220);
-    }
+  function chooseCpu(){
+    const m=legal(board);
+    for(const[r,c]of m){ const nb=sim(board,r,c,cpu()); if(nb&&hasFive(nb,cpu()))return[r,c]; }
+    for(const[r,c]of m){ const nb=sim(board,r,c,human()); if(nb&&hasFive(nb,human()))return[r,c]; }
+    return m.sort((a,b)=> (Math.abs(a[0]-4)+Math.abs(a[1]-4))-(Math.abs(b[0]-4)+Math.abs(b[1]-4)))[0];
   }
 
-  // CPU：単純に「即勝ち」>「相手の即勝ち阻止」>「中央寄り」
-  function cpuMove(){
-    if(gameOver || turn!==WHITE) return;
+  function maybeCpu(){
+    if(!isCpuMode()||gameOver||turn!==cpu())return;
+    setTimeout(()=>{
+      history.push({board:clone(board),turn,gameOver});
+      const[r,c]=chooseCpu();
+      board[r][c]=turn;
+      flips(board,r,c,turn).forEach(p=>board[p[0]][p[1]]=turn);
+      if(hasFive(board,turn)){ gameOver=true; render(); updateStatus(`${turn===BLACK?"黒":"白"}の勝ち！`); return; }
+      turn=opp(turn); render(); updateStatus();
+    },220);
+  }
 
-    const moves = legalMoves(board);
-
-    // 1) 即勝ち
-    for(const [r,c] of moves){
-      const nb = simulateMove(board, r, c, WHITE);
-      if(nb && hasFive(nb, WHITE)){
-        applyMove(r,c); return;
-      }
-    }
-
-    // 2) 相手（黒）の即勝ちを防ぐ
-    for(const [r,c] of moves){
-      const nb = simulateMove(board, r, c, BLACK);
-      if(nb && hasFive(nb, BLACK)){
-        applyMove(r,c); return;
-      }
-    }
-
-    // 3) 中央寄り
-    let best = moves[0];
-    let bestScore = -Infinity;
-    for(const [r,c] of moves){
-      const centerDist = Math.abs(r-4) + Math.abs(c-4);
-      const sc = -centerDist;
-      if(sc > bestScore){ bestScore = sc; best = [r,c]; }
-    }
-    applyMove(best[0], best[1]);
+  function updateStatus(msg){
+    if(msg){$status.textContent=msg;return;}
+    if(gameOver){$status.textContent="ゲーム終了";return;}
+    if(!isCpuMode()){$status.textContent=turn===BLACK?"黒の手番":"白の手番";return;}
+    $status.textContent=`手番：${turn===BLACK?"黒":"白"}${isHumanTurn()?"（あなた）":"（CPU）"}`;
   }
 
   function render(){
-    const dangers = (!gameOver && showDanger) ? computeDangerMoves(board, turn) : new Set();
-    const dClass = (turn === WHITE) ? "danger-yellow" : "danger-blue";
+    const show = showSafe && !gameOver && (!isCpuMode()||isHumanTurn());
+    const safes = show ? safeMoves(board,turn) : new Set();
+    const cls = turn===WHITE?"safe-red":"safe-blue";
 
-    $board.innerHTML = "";
-    for(let r=0;r<N;r++){
-      for(let c=0;c<N;c++){
-        const cell = document.createElement("div");
-        cell.className = "pt";
+    $board.innerHTML="";
+    for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+      const cell=document.createElement("div");
+      cell.className="pt"+(playable(r,c)?"":" disabled");
+      cell.onclick=()=>move(r,c);
 
-        const playable = isPlayable(r,c);
-        if(!playable) cell.classList.add("disabled");
-
-        cell.addEventListener("click", () => applyMove(r,c));
-
-        const v = board[r][c];
-        if(v === BLACK || v === WHITE){
-          const d = document.createElement("div");
-          d.className = "disc " + (v===BLACK?"black":"white");
-          cell.appendChild(d);
-        } else {
-          if(playable){
-            if(showDanger && dangers.has(`${r},${c}`)){
-              const df = document.createElement("div");
-              df.className = "danger-fill " + dClass;
-              cell.appendChild(df);
-            }
-            const dot = document.createElement("div");
-            dot.className = "dot";
-            cell.appendChild(dot);
-          }
+      if(board[r][c]){
+        const d=document.createElement("div");
+        d.className="disc "+(board[r][c]===BLACK?"black":"white");
+        cell.appendChild(d);
+      }else if(playable(r,c)){
+        if(show&&safes.has(`${r},${c}`)){
+          const sf=document.createElement("div");
+          sf.className="safe-fill "+cls;
+          cell.appendChild(sf);
         }
-
-        $board.appendChild(cell);
+        const dot=document.createElement("div"); dot.className="dot"; cell.appendChild(dot);
       }
+      $board.appendChild(cell);
     }
   }
 
-  function restart(){
-    board = makeEmpty();
-    turn = BLACK;
-    gameOver = false;
-    history = [];
-    render();
-    updateStatus();
-  }
-
-  $undoBtn.addEventListener("click", () => {
-    if(!history.length) return;
-    popHistory();
-    render();
-    updateStatus();
-
-    // CPUモードなら「あなたの手番」まで戻す
-    if(isCpuMode() && !gameOver && turn===WHITE && history.length){
-      popHistory();
-      render();
-      updateStatus();
+  document.getElementById("undoBtn").onclick=()=>{
+    if(!history.length)return;
+    const s=history.pop(); board=clone(s.board); turn=s.turn; gameOver=s.gameOver;
+    render(); updateStatus();
+    if(isCpuMode()&&!isHumanTurn()&&history.length){
+      const s2=history.pop(); board=clone(s2.board); turn=s2.turn; gameOver=s2.gameOver;
+      render(); updateStatus();
     }
-  });
+  };
+  document.getElementById("restartBtn").onclick=init;
+  $mode.onchange=init;
+  $humanColor.onchange=init;
 
-  $restartBtn.addEventListener("click", restart);
-  $mode.addEventListener("change", restart);
-
-  // 危険手ON/OFF
-  $dangerBtn.addEventListener("click", () => {
-    showDanger = !showDanger;
-    $dangerBtn.textContent = "危険手：" + (showDanger ? "ON" : "OFF");
+  $safeBtn.onclick=()=>{
+    showSafe=!showSafe;
+    $safeBtn.textContent="安全手："+(showSafe?"ON":"OFF");
     render();
-  });
+  };
 
-  restart();
+  init();
 })();
 </script>
 </body>
