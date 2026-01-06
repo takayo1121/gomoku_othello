@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>五目オセロ（交点 / 安全手OFF / CPU最強 強30秒+ダブルスレット）</title>
+<title>五目オセロ（交点 / 安全手OFF / CPU最強+ 可変思考時間）</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <style>
@@ -137,8 +137,9 @@
   <div id="thinkingOverlay"><div class="label">思考中…</div></div>
 
   <div class="note">
-    「強（最強+）」：最大30秒探索＋候補手拡大＋ダブルスレット検出。3秒以上かかると「思考中…」表示。<br>
-    安全手（塗り丸）は初期OFF。CPU戦ではCPU番の安全手は表示しません。
+    強（最強+）：ダブルスレット検出＋候補手拡大＋反復深化（最大思考時間は局面で可変）。<br>
+    強の思考時間：6手目まで最大3秒／10手目まで最大10秒／それ以降最大30秒。<br>
+    3秒以上かかる場合のみ「思考中…」を表示します。安全手は初期OFF。CPU番の安全手は表示しません。
   </div>
 
 <script>
@@ -179,6 +180,13 @@
 
   function showThinking(){ $overlay.style.display="flex"; }
   function hideThinking(){ $overlay.style.display="none"; }
+
+  function countStones(b){
+    let n=0;
+    for(let r=PLAY_MIN;r<=PLAY_MAX;r++)for(let c=PLAY_MIN;c<=PLAY_MAX;c++)
+      if(b[r][c]!==EMPTY) n++;
+    return n;
+  }
 
   function init(){
     token++; // キャンセル
@@ -245,7 +253,7 @@
   }
 
   // ---------------------------
-  // CPU 最強+（hard）：候補増 + ダブルスレット + 反復深化 + αβ + TT + yield
+  // CPU 最強+：候補増 + ダブルスレット + 反復深化 + αβ + TT + yield
   // ---------------------------
 
   function anyStoneExists(b){
@@ -254,25 +262,14 @@
     return false;
   }
 
-  function countStones(b){
-    let n=0;
-    for(let r=PLAY_MIN;r<=PLAY_MAX;r++)for(let c=PLAY_MIN;c<=PLAY_MAX;c++)
-      if(b[r][c]!==EMPTY) n++;
-    return n;
-  }
-
-  // 候補：石の近傍（radius）+ “盤面が進んだら全合法” に近づける
   function candidateMoves(b, radius){
     if(!anyStoneExists(b)){
       return [[4,4],[4,3],[3,4],[4,5],[5,4],[3,3],[5,5],[3,5],[5,3]];
     }
-
     const stones = countStones(b);
-    // 終盤は全部候補（読み切り寄せ）
-    if(stones >= 34){ // 49のうち約70%埋まったら
-      return legal(b);
+    if(stones >= 34){
+      return legal(b); // 終盤は全候補寄せ
     }
-
     const cand = new Set();
     for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
       for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
@@ -285,7 +282,6 @@
         }
       }
     }
-
     const out=[];
     for(const s of cand){
       const [r,c]=s.split(",").map(Number);
@@ -306,7 +302,6 @@
     return {len: 1+a+bcnt, openEnds: end1+end2};
   }
 
-  // 「次の1手で勝てる手」がいくつあるか（=即勝ち手数）
   function countImmediateWins(b, col, candList){
     let cnt = 0;
     const moves = candList || legal(b);
@@ -314,15 +309,11 @@
       if(b[r][c]!==EMPTY) continue;
       const nb = sim(b,r,c,col);
       if(nb && hasFive(nb, col)) cnt++;
-      // 2個以上あれば十分（ダブルスレット判定用）
       if(cnt >= 2) return 2;
     }
     return cnt;
   }
 
-  // 評価（CPU視点）
-  // - パターン（開いた四/三）を超重く
-  // - “即勝ち手数”/“ダブルスレット”を明示的に評価
   function evaluate(b, cpuCol){
     const humCol = opp(cpuCol);
     if(hasFive(b, cpuCol)) return 1e15;
@@ -341,7 +332,6 @@
       }
     }
 
-    // パターン加点（重い）
     function addFor(col, sign){
       for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
         for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
@@ -349,7 +339,7 @@
           for(const [dr,dc] of checkDirs){
             const f=lineFeature(b, r, c, col, dr, dc);
             if(f.len>=4){
-              if(f.openEnds===2) score += sign*1200000;   // 開いた四
+              if(f.openEnds===2) score += sign*1200000;
               else if(f.openEnds===1) score += sign*260000;
               else score += sign*30000;
             }else if(f.len===3){
@@ -368,22 +358,19 @@
     addFor(cpuCol, +1);
     addFor(humCol, -1);
 
-    // 即勝ち手数（=次で勝てる）＆ダブルスレット（2個以上）
-    // ※候補を全探索しすぎないよう、近傍候補で見る（十分強い）
     const cand = candidateMoves(b, 3);
     const cpuWins = countImmediateWins(b, cpuCol, cand);
     const humWins = countImmediateWins(b, humCol, cand);
 
-    if(cpuWins >= 2) score += 5e8;        // CPUのダブルスレット
-    else if(cpuWins === 1) score += 8e6;  // CPUの単発脅威
+    if(cpuWins >= 2) score += 5e8;
+    else if(cpuWins === 1) score += 8e6;
 
-    if(humWins >= 2) score -= 6e8;        // 相手のダブルスレットはより危険
+    if(humWins >= 2) score -= 6e8;
     else if(humWins === 1) score -= 1.2e7;
 
     return score;
   }
 
-  // TTキー：7x7 + 手番
   function keyOf(b, turnCol){
     let s = String(turnCol) + "|";
     for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
@@ -396,24 +383,29 @@
 
   function params(){
     const d = $difficulty.value;
-    if(d==="easy")   return {timeMs: 100,   maxCand: 16, radius: 2, baseDepth: 1, yieldEvery: 1200};
-    if(d==="medium") return {timeMs: 250,   maxCand: 16, radius: 2, baseDepth: 2, yieldEvery: 1500};
-    // ★ 最強+: 最大30秒 / 候補増 / 半径拡大
-    return            {timeMs: 30000, maxCand: 22, radius: 4, baseDepth: 3, yieldEvery: 1800};
+    if(d==="easy")   return {timeMs: 120,   maxCand: 16, radius: 2, baseDepth: 1, yieldEvery: 1200};
+    if(d==="medium") return {timeMs: 300,   maxCand: 16, radius: 2, baseDepth: 2, yieldEvery: 1500};
+
+    // ★ hard（最強+）：局面（石数）で最大思考時間を可変にする
+    const stones = countStones(board);
+
+    // 指定：6手目まで最大3秒 / 10手目まで最大10秒 / それ以降30秒
+    const timeMs = (stones <= 6) ? 3000 : (stones <= 10) ? 10000 : 30000;
+
+    // 序盤は候補/半径も少し抑えてテンポUP（強さは維持しつつ）
+    let maxCand = 22, radius = 4;
+    if(stones <= 6){ maxCand = 18; radius = 3; }
+    else if(stones <= 10){ maxCand = 20; radius = 3; }
+    else { maxCand = 24; radius = 4; }
+
+    return {timeMs, maxCand, radius, baseDepth: 3, yieldEvery: 1800};
   }
 
-  // 手の並べ替え：
-  // - 即勝ち
-  // - 相手の即勝ちブロック
-  // - “次手の即勝ち手数”が増える（ダブルスレット誘発）
-  // - その後に局所連 + 評価
   function orderedMoves(b, col, maxCand, radius){
     const o = opp(col);
     const cand = candidateMoves(b, radius);
     const scored=[];
 
-    // 相手が今すぐ勝つ手（それを塞ぐ手）を優先するため、相手勝ち手座標を先に集計
-    // ※候補のみで見る（十分）
     const oppWinSquares = new Set();
     for(const [r,c] of cand){
       if(b[r][c]!==EMPTY) continue;
@@ -429,7 +421,6 @@
       const winNow = hasFive(nb, col) ? 1 : 0;
       const blocksOppWin = oppWinSquares.has(`${r},${c}`) ? 1 : 0;
 
-      // ダブルスレット（次で勝てる手が2つ以上）を強く優先
       const nextCand = candidateMoves(nb, radius);
       const forks = countImmediateWins(nb, col, nextCand); // 0/1/2
       const forkBonus = (forks>=2) ? 1 : (forks===1 ? 0.2 : 0);
@@ -461,11 +452,9 @@
   }
 
   async function minimaxAsync(b, depth, alpha, beta, maximizing, cpuCol, turnCol, deadline, tt, ctx){
-    // キャンセル/時間
     if(ctx.tok !== token) return evaluate(b, cpuCol);
     if(performance.now() > deadline) return evaluate(b, cpuCol);
 
-    // 定期yield（UI更新/思考中表示を効かせる）
     ctx.nodes++;
     if(ctx.nodes % ctx.yieldEvery === 0){
       await yieldToUI();
@@ -475,17 +464,15 @@
 
     const humCol = opp(cpuCol);
 
-    // 終端
     if(hasFive(b, cpuCol)) return 1e15;
     if(hasFive(b, humCol)) return -1e15;
 
-    // 0深さでも “即勝ち/即負け” を見てブレを減らす（簡易クワイエス）
     if(depth === 0){
       const cand = candidateMoves(b, 3);
       const cpuWins = countImmediateWins(b, cpuCol, cand);
       const humWins = countImmediateWins(b, humCol, cand);
-      if(cpuWins >= 1) return 9e14;     // ほぼ勝ち
-      if(humWins >= 1) return -9e14;    // ほぼ負け
+      if(cpuWins >= 1) return 9e14;
+      if(humWins >= 1) return -9e14;
       return evaluate(b, cpuCol);
     }
 
@@ -533,7 +520,6 @@
     const humCol = human();
     const {timeMs, maxCand, radius, baseDepth, yieldEvery} = params();
 
-    // 即勝ち最優先
     const baseMoves = orderedMoves(board, cpuCol, maxCand, radius);
     for(const [r,c] of baseMoves){
       const nb = sim(board,r,c,cpuCol);
@@ -553,26 +539,24 @@
     const start = performance.now();
     const deadline = start + timeMs;
 
-    // 3秒で「思考中…」
+    // ★ 3秒を超える可能性がある時だけ「思考中…」を予約
     const myTok = token;
-    const thinkingTimer = setTimeout(() => {
-      if(myTok === token && cpuThinking) showThinking();
-    }, 3000);
+    let thinkingTimer = null;
+    if(timeMs > 3000){
+      thinkingTimer = setTimeout(() => {
+        if(myTok === token && cpuThinking) showThinking();
+      }, 3000);
+    }
 
     const tt = new Map();
     const ctx = { tok: myTok, nodes: 0, yieldEvery };
 
     let bestMove = baseMoves[0] || [4,4];
-    let bestVal  = -Infinity;
-
-    // 反復深化
     let depth = baseDepth;
 
-    // iPhone向け安全上限（ただし30秒内で可能なら深く行く）
     const maxDepthCap = 14;
 
     while(performance.now() < deadline && ctx.tok === token){
-      // PV優先：bestMoveを先頭に
       const moves = (() => {
         const m = orderedMoves(board, cpuCol, maxCand, radius);
         const key = `${bestMove[0]},${bestMove[1]}`;
@@ -600,16 +584,14 @@
       }
 
       bestMove = localBestMove;
-      bestVal  = localBestVal;
 
       depth++;
       if(depth > maxDepthCap) break;
 
-      // 画面更新
       await yieldToUI();
     }
 
-    clearTimeout(thinkingTimer);
+    if(thinkingTimer) clearTimeout(thinkingTimer);
     return bestMove;
   }
 
@@ -620,7 +602,7 @@
   function move(r,c){
     if(gameOver||!playable(r,c)||board[r][c]!==EMPTY)return;
     if(isCpuMode()&&!isHumanTurn())return;
-    if(cpuThinking) return; // 思考中の誤操作防止
+    if(cpuThinking) return;
 
     history.push({board:clone(board),turn,gameOver});
     board[r][c]=turn;
@@ -637,7 +619,7 @@
     if(!isCpuMode()||gameOver||turn!==cpu()) return;
 
     cpuThinking = true;
-    const myTok = ++token; // これ以降、このtoken以外はキャンセル扱い
+    const myTok = ++token;
 
     updateStatus();
     await new Promise(r => setTimeout(r, 0));
@@ -687,8 +669,11 @@
       $status.textContent = (turn===BLACK?"黒の手番":"白の手番");
       return;
     }
+
     const d = $difficulty.value==="easy"?"弱":$difficulty.value==="medium"?"中":"強（最強+）";
-    $status.textContent = `手番：${turn===BLACK?"黒":"白"}${isHumanTurn()?"（あなた）":"（CPU）"} / 難易度：${d}`;
+    const stones = countStones(board);
+    const t = (stones <= 6) ? "最大3秒" : (stones <= 10) ? "最大10秒" : "最大30秒";
+    $status.textContent = `手番：${turn===BLACK?"黒":"白"}${isHumanTurn()?"（あなた）":"（CPU）"} / 難易度：${d} / 思考：${t}`;
   }
 
   function render(){
@@ -730,7 +715,6 @@
     let s=history.pop(); board=clone(s.board); turn=s.turn; gameOver=s.gameOver;
     render(); updateStatus();
 
-    // CPU戦は「あなたの手番」まで戻す
     if(isCpuMode() && !isHumanTurn() && history.length){
       s=history.pop(); board=clone(s.board); turn=s.turn; gameOver=s.gameOver;
       render(); updateStatus();
