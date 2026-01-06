@@ -1,740 +1,1017 @@
 <!doctype html>
 <html lang="ja">
 <head>
-<meta charset="utf-8">
-<title>五目オセロ（交点 / 安全手OFF / CPU最強+ 可変思考時間）</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>五目オセロ（5個ちょうど勝利）</title>
 <style>
+  :root{
+    --bg:#0b0f14;
+    --panel:#111826;
+    --text:#e6eef8;
+    --muted:#9fb0c5;
+    --line:#2b3a52;
+    --wood:#caa56a;
+    --wood2:#b98f4f;
+    --accent:#4aa3ff;
+    --danger:#ff4a4a;
+  }
   body{
-    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN",sans-serif;
-    background:#f5f5f5;margin:0;padding:12px;
-  }
-  #status{font-weight:700;margin-bottom:8px}
-  .controls{margin-bottom:10px}
-  button,select{font-size:14px;margin-right:6px;padding:6px 10px}
-
-  .board{
-    width:min(92vw,520px);
-    aspect-ratio:1/1;
-    display:grid;
-    grid-template-columns:repeat(9,1fr);
-    background:#0a6a3a;
-    border:2px solid #222;
-  }
-
-  .pt{
-    position:relative;
+    margin:0;
+    background:linear-gradient(180deg,#0b0f14,#07111d);
+    color:var(--text);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
     display:flex;
-    justify-content:center;
+    flex-direction:column;
     align-items:center;
+    padding:16px;
+    gap:12px;
+  }
+  .wrap{
+    width:min(980px, 100%);
+    display:grid;
+    grid-template-columns: 1fr;
+    gap:12px;
+  }
+  @media(min-width:880px){
+    .wrap{ grid-template-columns: 520px 1fr; align-items:start; }
+  }
+  .card{
+    background:rgba(17,24,38,.88);
+    border:1px solid rgba(43,58,82,.7);
+    border-radius:14px;
+    padding:12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .row > *{ margin:4px 0; }
+  label{ font-size:13px; color:var(--muted); }
+  select, button, input[type="checkbox"]{
+    font-size:14px;
+  }
+  select, button{
+    background:#0f1726;
+    color:var(--text);
+    border:1px solid rgba(43,58,82,.8);
+    border-radius:10px;
+    padding:8px 10px;
+  }
+  button{
     cursor:pointer;
-    user-select:none;
-    touch-action:manipulation;
   }
-  .pt::before{
-    content:"";
-    position:absolute;
-    inset:0;
-    background:
-      linear-gradient(rgba(0,0,0,.35),rgba(0,0,0,.35)) center/100% 1px no-repeat,
-      linear-gradient(90deg,rgba(0,0,0,.35),rgba(0,0,0,.35)) center/1px 100% no-repeat;
-    opacity:.9;
+  button:hover{ border-color: rgba(74,163,255,.9); }
+  button:disabled{ opacity:.45; cursor:not-allowed; }
+  .tiny{ font-size:12px; color:var(--muted); }
+  .status{
+    display:flex; flex-direction:column; gap:6px;
+    font-size:14px;
   }
-
-  .disabled{ cursor:not-allowed; opacity:.35; }
-
-  .disc{
-    width:62%;
-    height:62%;
-    border-radius:50%;
-    box-shadow:0 2px 8px rgba(0,0,0,.35);
-    border:1px solid rgba(0,0,0,.25);
-    position:relative;
-    z-index:3;
+  .status strong{ font-size:16px; }
+  canvas{
+    width:100%;
+    height:auto;
+    border-radius:14px;
+    background: radial-gradient(circle at 30% 20%, rgba(255,255,255,.08), rgba(0,0,0,0) 45%),
+                linear-gradient(135deg, var(--wood), var(--wood2));
+    border:1px solid rgba(43,58,82,.8);
+    touch-action: manipulation;
   }
-  .black{background:#000;}
-  .white{background:#fff;}
-
-  .dot{
-    width:10%;
-    height:10%;
-    border-radius:50%;
-    background:rgba(0,0,0,.35);
-    position:relative;
-    z-index:2;
+  .hintdot{
+    width:10px; height:10px; border-radius:50%;
+    display:inline-block; vertical-align:middle; margin-right:6px;
   }
-
-  /* 安全手（表示ON時のみ） */
-  .safe-fill{
-    width:62%;
-    height:62%;
-    border-radius:50%;
-    position:absolute;
-    z-index:2;
-    opacity:.85;
-    box-shadow:0 2px 8px rgba(0,0,0,.22);
-  }
-  .safe-blue{ background:rgba(0,90,255,.92); } /* 黒番 */
-  .safe-red{  background:rgba(220,0,0,.92); } /* 白番 */
-
-  .note{font-size:12px;opacity:.85;line-height:1.5;margin-top:8px}
-
-  /* 思考中オーバーレイ */
-  #thinkingOverlay{
+  .blue{ background:#3aa0ff; }
+  .red{ background:#ff5252; }
+  .overlay{
     position:fixed;
     inset:0;
     display:none;
     align-items:center;
     justify-content:center;
-    background:rgba(0,0,0,.20);
-    z-index:9999;
+    background:rgba(0,0,0,.35);
+    z-index:10;
     pointer-events:none;
   }
-  #thinkingOverlay .label{
-    font-size:22px;
-    font-weight:800;
-    color:#fff;
-    text-shadow:0 2px 10px rgba(0,0,0,.55);
-    padding:10px 14px;
-    border-radius:12px;
-    background:rgba(0,0,0,.35);
-    backdrop-filter: blur(2px);
+  .overlay .box{
+    background:rgba(17,24,38,.95);
+    border:1px solid rgba(74,163,255,.5);
+    border-radius:16px;
+    padding:18px 22px;
+    font-size:18px;
+    box-shadow:0 20px 60px rgba(0,0,0,.55);
+  }
+  .kbd{
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    background:rgba(255,255,255,.06);
+    border:1px solid rgba(255,255,255,.10);
+    padding:1px 6px;
+    border-radius:8px;
+    font-size:12px;
   }
 </style>
 </head>
-
 <body>
-  <div id="status">準備中…</div>
 
-  <div class="controls">
-    <button id="undoBtn">Undo</button>
-    <button id="restartBtn">リスタート</button>
-
-    <select id="mode">
-      <option value="pvp">人 vs 人</option>
-      <option value="cpu">人 vs CPU</option>
-    </select>
-
-    <!-- CPU戦のときだけ表示 -->
-    <select id="humanColor" title="CPU戦：あなたの色" style="display:none">
-      <option value="black">あなた：黒（先手）</option>
-      <option value="white">あなた：白（後手）</option>
-    </select>
-
-    <!-- CPU戦のときだけ表示 -->
-    <select id="difficulty" title="CPU難易度" style="display:none">
-      <option value="easy">難易度：弱</option>
-      <option value="medium">難易度：中</option>
-      <option value="hard" selected>難易度：強（最強+）</option>
-    </select>
-
-    <button id="safeToggleBtn">安全手：OFF</button>
+<div class="wrap">
+  <div class="card">
+    <canvas id="board" width="520" height="520"></canvas>
+    <div class="tiny" style="margin-top:8px; line-height:1.6;">
+      盤は<strong>7×7の交点</strong>（a1〜a7 / b1〜b7）。外枠には置けません。<br>
+      反転はオセロと同じ。勝利条件は<strong>「5個ちょうど」</strong>（6連以上は勝ちになりません）。
+    </div>
   </div>
 
-  <div id="board" class="board"></div>
+  <div class="card">
+    <div class="row">
+      <label>対戦</label>
+      <select id="mode">
+        <option value="pvp">人 vs 人</option>
+        <option value="cpu">人 vs CPU</option>
+      </select>
 
-  <div id="thinkingOverlay"><div class="label">思考中…</div></div>
+      <span id="cpuColorWrap" style="display:none;">
+        <label style="margin-left:8px;">あなたの手番</label>
+        <select id="humanColor">
+          <option value="black">黒（先手）</option>
+          <option value="white">白（後手）</option>
+        </select>
+      </span>
 
-  <div class="note">
-    強（最強+）：ダブルスレット検出＋候補手拡大＋反復深化（最大思考時間は局面で可変）。<br>
-    強の思考時間：6手目まで最大3秒／10手目まで最大10秒／それ以降最大30秒。<br>
-    3秒以上かかる場合のみ「思考中…」を表示します。安全手は初期OFF。CPU番の安全手は表示しません。
+      <span id="difficultyWrap" style="display:none;">
+        <label style="margin-left:8px;">CPU難易度</label>
+        <select id="difficulty">
+          <option value="easy">弱</option>
+          <option value="medium">中</option>
+          <option value="strong">強（最大30秒）</option>
+        </select>
+      </span>
+    </div>
+
+    <div class="row" style="margin-top:6px;">
+      <button id="newGame">新規ゲーム</button>
+      <button id="undo">Undo</button>
+
+      <span style="margin-left:auto;"></span>
+
+      <label style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="showSafe" />
+        安全手を表示（あなたの手番のみ）
+      </label>
+    </div>
+
+    <div class="status" style="margin-top:10px;">
+      <div><strong id="turnText">黒番</strong> <span id="resultText" class="tiny"></span></div>
+      <div class="tiny" id="countText">黒: 0 / 白: 0　手数: 0</div>
+      <div class="tiny">
+        <span class="hintdot blue"></span>黒の安全手　
+        <span style="margin-left:10px;"></span>
+        <span class="hintdot red"></span>白の安全手
+      </div>
+      <div class="tiny">
+        クリック/タップで着手。Undoは直前手を戻します（CPU戦では「あなたの手＋CPUの手」をまとめて戻します）。
+      </div>
+    </div>
+
+    <hr style="border:none; border-top:1px solid rgba(43,58,82,.6); margin:12px 0;">
+
+    <div class="tiny" style="line-height:1.7;">
+      CPU思考時間（強）: <span class="kbd">6手目まで最大3秒</span> / <span class="kbd">10手目まで最大10秒</span> / 以降<span class="kbd">最大30秒</span><br>
+      思考が<span class="kbd">3秒超</span>なら中央に「思考中…」を表示します。
+    </div>
   </div>
+</div>
+
+<div class="overlay" id="thinking">
+  <div class="box">思考中…</div>
+</div>
 
 <script>
-(() => {
-  const N=9, PLAY_MIN=1, PLAY_MAX=7;
-  const EMPTY=0, BLACK=1, WHITE=2;
-  const dirs8=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
-  const checkDirs=[[1,0],[0,1],[1,1],[1,-1]];
+/* =========================
+   Core rules & board
+========================= */
+const SIZE = 7;          // playable intersections are 7x7
+const EMPTY = 0, BLACK = 1, WHITE = 2;
 
-  let board, turn, gameOver, history;
-  let showSafe = false;      // 安全手はデフォルトOFF
-  let cpuThinking = false;
-  let token = 0;             // 思考キャンセル用
+const dirs8 = [
+  [-1,-1],[-1,0],[-1,1],
+  [0,-1],       [0,1],
+  [1,-1],[1,0],[1,1]
+];
+const checkDirs = [[1,0],[0,1],[1,1],[1,-1]];
 
-  const $board=document.getElementById("board");
-  const $status=document.getElementById("status");
-  const $mode=document.getElementById("mode");
-  const $humanColor=document.getElementById("humanColor");
-  const $difficulty=document.getElementById("difficulty");
-  const $safeBtn=document.getElementById("safeToggleBtn");
-  const $overlay=document.getElementById("thinkingOverlay");
+const opp = c => (c===BLACK?WHITE:BLACK);
 
-  const opp=c=>c===BLACK?WHITE:BLACK;
-  const playable=(r,c)=>r>=PLAY_MIN&&r<=PLAY_MAX&&c>=PLAY_MIN&&c<=PLAY_MAX;
-  const inB=(r,c)=>r>=0&&r<N&&c>=0&&c<N;
-  const clone=b=>b.map(r=>r.slice());
+function inside(r,c){ return r>=0 && r<SIZE && c>=0 && c<SIZE; }
 
-  const isCpuMode=()=> $mode.value==="cpu";
-  const human=()=> $humanColor.value==="black"?BLACK:WHITE;
-  const cpu=()=> opp(human());
-  const isHumanTurn=()=> !isCpuMode() || turn===human();
+function makeBoard(){
+  return Array.from({length: SIZE}, ()=> Array(SIZE).fill(EMPTY));
+}
 
-  function updateCpuUiVisibility(){
-    const on = isCpuMode();
-    $humanColor.style.display = on ? "" : "none";
-    $difficulty.style.display = on ? "" : "none";
-  }
+function cloneBoard(b){
+  return b.map(row => row.slice());
+}
 
-  function showThinking(){ $overlay.style.display="flex"; }
-  function hideThinking(){ $overlay.style.display="none"; }
-
-  function countStones(b){
-    let n=0;
-    for(let r=PLAY_MIN;r<=PLAY_MAX;r++)for(let c=PLAY_MIN;c<=PLAY_MAX;c++)
-      if(b[r][c]!==EMPTY) n++;
-    return n;
-  }
-
-  function init(){
-    token++; // キャンセル
-    cpuThinking=false;
-    hideThinking();
-
-    board=Array.from({length:N},()=>Array(N).fill(EMPTY));
-    turn=BLACK; gameOver=false; history=[];
-    updateCpuUiVisibility();
-    render(); updateStatus();
-    maybeCpu();
-  }
-
-  function flips(b,r,c,col){
-    let f=[];
-    for(const[dR,dC]of dirs8){
-      let x=r+dR,y=c+dC,tmp=[];
-      while(inB(x,y)&&b[x][y]===opp(col)){tmp.push([x,y]);x+=dR;y+=dC;}
-      if(tmp.length&&inB(x,y)&&b[x][y]===col)f=f.concat(tmp);
+function boardCount(b){
+  let bc=0,wc=0;
+  for(let r=0;r<SIZE;r++){
+    for(let c=0;c<SIZE;c++){
+      if(b[r][c]===BLACK) bc++;
+      else if(b[r][c]===WHITE) wc++;
     }
-    return f;
   }
+  return {bc,wc, stones: bc+wc};
+}
 
-  function sim(b,r,c,col){
-    if(!playable(r,c)||b[r][c]!==EMPTY)return null;
-    const nb=clone(b); nb[r][c]=col;
-    flips(nb,r,c,col).forEach(([x,y])=>nb[x][y]=col);
-    return nb;
-  }
-
-  function hasFive(b,col){
-    for(let r=PLAY_MIN;r<=PLAY_MAX;r++)for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
-      if(b[r][c]!==col)continue;
-      for(const[dR,dC]of checkDirs){
-        let n=1,x=r+dR,y=c+dC;
-        while(playable(x,y)&&b[x][y]===col){ if(++n>=5) return true; x+=dR;y+=dC; }
-      }
+function flips(b, r, c, col){
+  // returns array of [rr,cc] to flip
+  const out = [];
+  const o = opp(col);
+  for(const [dr,dc] of dirs8){
+    let rr=r+dr, cc=c+dc;
+    const tmp=[];
+    while(inside(rr,cc) && b[rr][cc]===o){
+      tmp.push([rr,cc]);
+      rr+=dr; cc+=dc;
     }
-    return false;
-  }
-
-  function legal(b){
-    const m=[];
-    for(let r=PLAY_MIN;r<=PLAY_MAX;r++)for(let c=PLAY_MIN;c<=PLAY_MAX;c++)
-      if(b[r][c]===EMPTY)m.push([r,c]);
-    return m;
-  }
-
-  // 安全手（表示用）
-  function safeMoves(b,col){
-    const set=new Set(), o=opp(col);
-    for(const[r,c]of legal(b)){
-      const nb=sim(b,r,c,col);
-      if(!nb)continue;
-      if(hasFive(nb,col)){ set.add(`${r},${c}`); continue; }
-      let oppWin=false;
-      for(const[x,y]of legal(nb)){
-        const nb2=sim(nb,x,y,o);
-        if(nb2&&hasFive(nb2,o)){ oppWin=true; break; }
-      }
-      if(!oppWin)set.add(`${r},${c}`);
+    if(tmp.length && inside(rr,cc) && b[rr][cc]===col){
+      for(const p of tmp) out.push(p);
     }
-    return set;
   }
+  return out;
+}
 
-  // ---------------------------
-  // CPU 最強+：候補増 + ダブルスレット + 反復深化 + αβ + TT + yield
-  // ---------------------------
+function applyMove(b, r, c, col){
+  if(!inside(r,c)) return null;
+  if(b[r][c]!==EMPTY) return null;
 
-  function anyStoneExists(b){
-    for(let r=PLAY_MIN;r<=PLAY_MAX;r++)for(let c=PLAY_MIN;c<=PLAY_MAX;c++)
-      if(b[r][c]!==EMPTY) return true;
-    return false;
-  }
+  const f = flips(b,r,c,col);
+  // 五目式：どこでも置ける（空マスならOK）
+  // ※反転が0でも置ける仕様（五目に寄せる）
+  const nb = cloneBoard(b);
+  nb[r][c]=col;
+  for(const [rr,cc] of f) nb[rr][cc]=col;
+  return { board: nb, flipped: f };
+}
 
-  function candidateMoves(b, radius){
-    if(!anyStoneExists(b)){
-      return [[4,4],[4,3],[3,4],[4,5],[5,4],[3,3],[5,5],[3,5],[5,3]];
-    }
-    const stones = countStones(b);
-    if(stones >= 34){
-      return legal(b); // 終盤は全候補寄せ
-    }
-    const cand = new Set();
-    for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
-      for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
-        if(b[r][c]===EMPTY) continue;
-        for(let dr=-radius; dr<=radius; dr++){
-          for(let dc=-radius; dc<=radius; dc++){
-            const rr=r+dr, cc=c+dc;
-            if(playable(rr,cc) && b[rr][cc]===EMPTY) cand.add(`${rr},${cc}`);
-          }
+/* =========================
+   Win condition: exact five
+   - 5連があり、6連以上は勝ちではない
+========================= */
+function hasExactFive(b, col){
+  for(let r=0;r<SIZE;r++){
+    for(let c=0;c<SIZE;c++){
+      if(b[r][c]!==col) continue;
+
+      for(const [dr,dc] of checkDirs){
+        // start point check: previous cell must not be col
+        const pr=r-dr, pc=c-dc;
+        if(inside(pr,pc) && b[pr][pc]===col) continue;
+
+        // check 5
+        let ok=true;
+        for(let k=0;k<5;k++){
+          const rr=r+dr*k, cc=c+dc*k;
+          if(!inside(rr,cc) || b[rr][cc]!==col){ ok=false; break; }
         }
+        if(!ok) continue;
+
+        // 6th must not be col
+        const nr=r+dr*5, nc=c+dc*5;
+        if(inside(nr,nc) && b[nr][nc]===col) continue;
+
+        return true;
       }
     }
-    const out=[];
-    for(const s of cand){
-      const [r,c]=s.split(",").map(Number);
-      out.push([r,c]);
+  }
+  return false;
+}
+
+function legalMoves(b){
+  const m=[];
+  for(let r=0;r<SIZE;r++){
+    for(let c=0;c<SIZE;c++){
+      if(b[r][c]===EMPTY) m.push([r,c]);
     }
-    return out;
+  }
+  return m;
+}
+
+/* =========================
+   UI / State
+========================= */
+const canvas = document.getElementById("board");
+const ctx = canvas.getContext("2d");
+
+const elMode = document.getElementById("mode");
+const elHumanColor = document.getElementById("humanColor");
+const elDiff = document.getElementById("difficulty");
+const wrapHuman = document.getElementById("cpuColorWrap");
+const wrapDiff = document.getElementById("difficultyWrap");
+const elShowSafe = document.getElementById("showSafe");
+
+const btnNew = document.getElementById("newGame");
+const btnUndo = document.getElementById("undo");
+
+const turnText = document.getElementById("turnText");
+const resultText = document.getElementById("resultText");
+const countText = document.getElementById("countText");
+
+const thinkingOverlay = document.getElementById("thinking");
+
+let game = null;
+
+function newGame(){
+  const mode = elMode.value; // pvp | cpu
+  const humanIsBlack = (elHumanColor.value === "black");
+  const humanCol = humanIsBlack ? BLACK : WHITE;
+  const cpuCol = opp(humanCol);
+
+  game = {
+    mode,
+    board: makeBoard(),
+    turn: BLACK,
+    over: false,
+    winner: null, // BLACK/WHITE
+    history: [], // stack of {board, turn}
+    humanCol,
+    cpuCol,
+  };
+
+  // safety display default OFF (per request)
+  elShowSafe.checked = false;
+
+  pushHistory();
+  updateUI();
+  maybeCpuMove();
+}
+
+function pushHistory(){
+  game.history.push({
+    board: cloneBoard(game.board),
+    turn: game.turn,
+    over: game.over,
+    winner: game.winner
+  });
+}
+
+function popHistory(steps=1){
+  while(steps-- > 0 && game.history.length > 1){
+    game.history.pop();
+  }
+  const last = game.history[game.history.length-1];
+  game.board = cloneBoard(last.board);
+  game.turn = last.turn;
+  game.over = last.over;
+  game.winner = last.winner;
+}
+
+function setOver(winner){
+  game.over = true;
+  game.winner = winner; // BLACK/WHITE
+}
+
+function currentTurnName(){
+  return game.turn===BLACK ? "黒番" : "白番";
+}
+
+function colorName(c){ return c===BLACK ? "黒" : "白"; }
+
+function updateUI(){
+  // show/hide cpu controls
+  if(elMode.value === "cpu"){
+    wrapHuman.style.display = "";
+    wrapDiff.style.display = "";
+  }else{
+    wrapHuman.style.display = "none";
+    wrapDiff.style.display = "none";
+  }
+
+  // status
+  turnText.textContent = game.over
+    ? "対局終了"
+    : currentTurnName();
+
+  if(game.over){
+    resultText.textContent = game.winner ? `（${colorName(game.winner)}の勝ち）` : "（引き分け）";
+  }else{
+    resultText.textContent = "";
+  }
+
+  const {bc,wc,stones} = boardCount(game.board);
+  countText.textContent = `黒: ${bc} / 白: ${wc}　手数: ${stones}`;
+
+  // buttons
+  btnUndo.disabled = (game.history.length<=1) || isCpuThinking;
+  btnNew.disabled = isCpuThinking;
+
+  draw();
+}
+
+function showThinking(on){
+  thinkingOverlay.style.display = on ? "flex" : "none";
+}
+
+/* =========================
+   Drawing
+========================= */
+function draw(){
+  const W = canvas.width, H=canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  const pad = 50;
+  const grid = (W - 2*pad) / (SIZE-1);
+  const ox = pad, oy = pad;
+
+  // grid lines
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(0,0,0,.35)";
+  for(let i=0;i<SIZE;i++){
+    // horizontal
+    ctx.beginPath();
+    ctx.moveTo(ox, oy + i*grid);
+    ctx.lineTo(ox + (SIZE-1)*grid, oy + i*grid);
+    ctx.stroke();
+    // vertical
+    ctx.beginPath();
+    ctx.moveTo(ox + i*grid, oy);
+    ctx.lineTo(ox + i*grid, oy + (SIZE-1)*grid);
+    ctx.stroke();
+  }
+
+  // coordinates (a1..a7 / b1..b7)
+  ctx.fillStyle = "rgba(0,0,0,.45)";
+  ctx.font = "14px system-ui";
+  for(let c=0;c<SIZE;c++){
+    ctx.fillText(String.fromCharCode(97+c), ox + c*grid - 4, oy - 18);
+  }
+  for(let r=0;r<SIZE;r++){
+    ctx.fillText(String(1+r), ox - 22, oy + r*grid + 5);
+  }
+
+  // safe moves overlay (only on human turn, and only if toggled ON)
+  let safeSet = null;
+  if(elShowSafe.checked && !game.over && isHumanTurn()){
+    safeSet = computeSafeMoves(game.board, game.turn);
+  }
+
+  // draw safe dots
+  if(safeSet){
+    for(const key of safeSet){
+      const [r,c] = key.split(",").map(Number);
+      const x = ox + c*grid;
+      const y = oy + r*grid;
+      ctx.beginPath();
+      ctx.arc(x,y,8,0,Math.PI*2);
+      ctx.fillStyle = (game.turn===BLACK) ? "rgba(58,160,255,.95)" : "rgba(255,82,82,.95)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,.25)";
+      ctx.stroke();
+    }
+  }
+
+  // stones
+  for(let r=0;r<SIZE;r++){
+    for(let c=0;c<SIZE;c++){
+      const v = game.board[r][c];
+      if(v===EMPTY) continue;
+      const x = ox + c*grid;
+      const y = oy + r*grid;
+
+      // shadow
+      ctx.beginPath();
+      ctx.arc(x+2,y+3,20,0,Math.PI*2);
+      ctx.fillStyle = "rgba(0,0,0,.22)";
+      ctx.fill();
+
+      // stone
+      ctx.beginPath();
+      ctx.arc(x,y,20,0,Math.PI*2);
+      if(v===BLACK){
+        const g = ctx.createRadialGradient(x-6,y-6,4, x,y,24);
+        g.addColorStop(0,"#444");
+        g.addColorStop(1,"#070707");
+        ctx.fillStyle = g;
+      }else{
+        const g = ctx.createRadialGradient(x-6,y-6,4, x,y,24);
+        g.addColorStop(0,"#fff");
+        g.addColorStop(1,"#d9d9d9");
+        ctx.fillStyle = g;
+      }
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,.25)";
+      ctx.stroke();
+    }
+  }
+
+  // if game over, subtle overlay text on board
+  if(game.over){
+    ctx.fillStyle = "rgba(0,0,0,.35)";
+    ctx.fillRect(0, H/2-34, W, 68);
+    ctx.fillStyle = "rgba(255,255,255,.95)";
+    ctx.font = "bold 22px system-ui";
+    const t = game.winner ? `${colorName(game.winner)}の勝ち` : "引き分け";
+    const w = ctx.measureText(t).width;
+    ctx.fillText(t, (W-w)/2, H/2+8);
+  }
+}
+
+function screenToRC(x,y){
+  const W = canvas.width;
+  const pad = 50;
+  const grid = (W - 2*pad) / (SIZE-1);
+  const ox = pad, oy = pad;
+
+  // nearest intersection
+  const c = Math.round((x - ox)/grid);
+  const r = Math.round((y - oy)/grid);
+  if(!inside(r,c)) return null;
+
+  // distance threshold
+  const ix = ox + c*grid;
+  const iy = oy + r*grid;
+  const dist = Math.hypot(x-ix,y-iy);
+  if(dist > grid*0.38) return null;
+
+  return {r,c};
+}
+
+/* =========================
+   Safe move display
+   "safe" = not an immediate losing move:
+    after you play it, opponent has a move that wins immediately (exact five) -> unsafe
+========================= */
+function computeSafeMoves(b, turnCol){
+  const moves = legalMoves(b);
+  const safe = new Set();
+  for(const [r,c] of moves){
+    const res = applyMove(b,r,c,turnCol);
+    if(!res) continue;
+    const nb = res.board;
+
+    // if your move already wins, it is safe (and best)
+    if(hasExactFive(nb, turnCol)){
+      safe.add(`${r},${c}`);
+      continue;
+    }
+
+    // check if opponent has immediate winning reply
+    const op = opp(turnCol);
+    const replies = legalMoves(nb);
+    let oppWins = false;
+    for(const [rr,cc] of replies){
+      const rres = applyMove(nb, rr, cc, op);
+      if(!rres) continue;
+      if(hasExactFive(rres.board, op)){
+        oppWins = true;
+        break;
+      }
+    }
+    if(!oppWins) safe.add(`${r},${c}`);
+  }
+  return safe;
+}
+
+/* =========================
+   Game flow
+========================= */
+let isCpuThinking = false;
+
+function isHumanTurn(){
+  if(game.mode !== "cpu") return true; // in pvp, both are human
+  return game.turn === game.humanCol;
+}
+
+function maybeEndAfterMove(){
+  if(hasExactFive(game.board, BLACK)){
+    setOver(BLACK);
+    return true;
+  }
+  if(hasExactFive(game.board, WHITE)){
+    setOver(WHITE);
+    return true;
+  }
+  if(legalMoves(game.board).length===0){
+    game.over = true; game.winner = null;
+    return true;
+  }
+  return false;
+}
+
+function playAt(r,c){
+  if(game.over) return;
+  if(isCpuThinking) return;
+
+  // in cpu mode, ignore taps when it's CPU's turn
+  if(game.mode==="cpu" && game.turn===game.cpuCol) return;
+
+  const res = applyMove(game.board, r,c, game.turn);
+  if(!res) return;
+
+  game.board = res.board;
+
+  // record
+  game.turn = opp(game.turn);
+  maybeEndAfterMove();
+  pushHistory();
+  updateUI();
+
+  maybeCpuMove();
+}
+
+function undo(){
+  if(isCpuThinking) return;
+  if(game.history.length<=1) return;
+
+  if(game.mode==="cpu"){
+    // undo one full pair if possible: (human + cpu)
+    // If last move was by human (shouldn't happen), still undo up to 2 safely.
+    popHistory(2);
+  }else{
+    popHistory(1);
+  }
+  updateUI();
+}
+
+btnNew.addEventListener("click", ()=> newGame());
+btnUndo.addEventListener("click", ()=> undo());
+elMode.addEventListener("change", ()=>{
+  // hide/show controls already handled by updateUI
+  newGame();
+});
+elHumanColor.addEventListener("change", ()=> newGame());
+elDiff.addEventListener("change", ()=> {/* keep current, applies to next cpu move */});
+elShowSafe.addEventListener("change", ()=> draw());
+
+canvas.addEventListener("click", (ev)=>{
+  const rect = canvas.getBoundingClientRect();
+  const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
+  const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  const rc = screenToRC(x,y);
+  if(!rc) return;
+  playAt(rc.r, rc.c);
+});
+canvas.addEventListener("touchend", (ev)=>{
+  // for iOS: touchend gives last touch point
+  const t = ev.changedTouches[0];
+  if(!t) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = (t.clientX - rect.left) * (canvas.width / rect.width);
+  const y = (t.clientY - rect.top) * (canvas.height / rect.height);
+  const rc = screenToRC(x,y);
+  if(!rc) return;
+  playAt(rc.r, rc.c);
+});
+
+/* =========================
+   CPU AI (easy/medium/strong)
+   - strong uses iterative deepening alpha-beta with exact-five win
+   - time budget schedule (strong):
+       <=6th ply : 3s
+       <=10th ply: 10s
+       else      : 30s
+   - show "thinking..." if >3s
+========================= */
+
+function timeBudgetMs(){
+  const stones = boardCount(game.board).stones;
+  const ply = stones + 1; // next move number (rough)
+  const d = elDiff.value;
+  if(d==="easy") return 200;         // quick
+  if(d==="medium") return 1200;      // moderate
+  // strong schedule
+  if(ply <= 6) return 3000;
+  if(ply <= 10) return 10000;
+  return 30000;
+}
+
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function nowMs(){ return performance.now(); }
+
+async function maybeCpuMove(){
+  if(game.mode!=="cpu") return;
+  if(game.over) return;
+  if(game.turn !== game.cpuCol) return;
+
+  // CPU turn
+  isCpuThinking = true;
+  updateUI();
+
+  const budget = timeBudgetMs();
+  const thinkLabelTimer = setTimeout(()=>{
+    // show only if actually thinking > 3s
+    showThinking(true);
+  }, 3000);
+
+  try{
+    const move = await pickCpuMove(game.board, game.turn, budget, elDiff.value);
+    clearTimeout(thinkLabelTimer);
+    showThinking(false);
+
+    if(game.over){ isCpuThinking=false; updateUI(); return; }
+
+    if(move){
+      const res = applyMove(game.board, move.r, move.c, game.turn);
+      if(res){
+        game.board = res.board;
+      }
+    }
+    game.turn = opp(game.turn);
+    maybeEndAfterMove();
+    pushHistory();
+  } finally {
+    clearTimeout(thinkLabelTimer);
+    showThinking(false);
+    isCpuThinking = false;
+    updateUI();
+  }
+}
+
+function immediateWinMove(b, col){
+  const moves = legalMoves(b);
+  for(const [r,c] of moves){
+    const res = applyMove(b,r,c,col);
+    if(!res) continue;
+    if(hasExactFive(res.board, col)) return {r,c};
+  }
+  return null;
+}
+
+function blockOpponentWinMove(b, col){
+  const op = opp(col);
+  const moves = legalMoves(b);
+  for(const [r,c] of moves){
+    const res = applyMove(b,r,c,op);
+    if(!res) continue;
+    if(hasExactFive(res.board, op)) return {r,c}; // place here to block
+  }
+  return null;
+}
+
+// Evaluation: lightweight but strong-enough for 7x7
+function evalPos(b, me){
+  const op = opp(me);
+  if(hasExactFive(b, me)) return 1e15;
+  if(hasExactFive(b, op)) return -1e15;
+
+  // center preference + line potentials (with exact-five caution)
+  let score = 0;
+
+  // center
+  for(let r=0;r<SIZE;r++){
+    for(let c=0;c<SIZE;c++){
+      const v=b[r][c];
+      if(v===EMPTY) continue;
+      const cd = Math.abs(r-3)+Math.abs(c-3);
+      const w = 6 - cd;
+      score += (v===me ? +w : -w);
+    }
   }
 
   function lineFeature(b, r, c, col, dr, dc){
-    let a=0, x=r+dr, y=c+dc;
-    while(playable(x,y) && b[x][y]===col){ a++; x+=dr; y+=dc; }
-    const end1 = (playable(x,y) && b[x][y]===EMPTY) ? 1 : 0;
+    let a=0, rr=r+dr, cc=c+dc;
+    while(inside(rr,cc) && b[rr][cc]===col){ a++; rr+=dr; cc+=dc; }
+    const end1 = (inside(rr,cc) && b[rr][cc]===EMPTY) ? 1 : 0;
 
-    let bcnt=0; x=r-dr; y=c-dc;
-    while(playable(x,y) && b[x][y]===col){ bcnt++; x-=dr; y-=dc; }
-    const end2 = (playable(x,y) && b[x][y]===EMPTY) ? 1 : 0;
-
-    return {len: 1+a+bcnt, openEnds: end1+end2};
+    let bcnt=0; rr=r-dr; cc=c-dc;
+    while(inside(rr,cc) && b[rr][cc]===col){ bcnt++; rr-=dr; cc-=dc; }
+    const end2 = (inside(rr,cc) && b[rr][cc]===EMPTY) ? 1 : 0;
+    return {len:1+a+bcnt, open:end1+end2};
   }
 
-  function countImmediateWins(b, col, candList){
-    let cnt = 0;
-    const moves = candList || legal(b);
-    for(const [r,c] of moves){
-      if(b[r][c]!==EMPTY) continue;
-      const nb = sim(b,r,c,col);
-      if(nb && hasFive(nb, col)) cnt++;
-      if(cnt >= 2) return 2;
-    }
-    return cnt;
-  }
-
-  function evaluate(b, cpuCol){
-    const humCol = opp(cpuCol);
-    if(hasFive(b, cpuCol)) return 1e15;
-    if(hasFive(b, humCol)) return -1e15;
-
-    let score = 0;
-
-    // 中央寄り（軽く）
-    for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
-      for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
-        const v=b[r][c];
-        if(v===EMPTY) continue;
-        const centerDist = Math.abs(r-4)+Math.abs(c-4);
-        const w = 6 - centerDist;
-        score += (v===cpuCol ? +w : -w);
-      }
-    }
-
-    function addFor(col, sign){
-      for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
-        for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
-          if(b[r][c]!==col) continue;
-          for(const [dr,dc] of checkDirs){
-            const f=lineFeature(b, r, c, col, dr, dc);
-            if(f.len>=4){
-              if(f.openEnds===2) score += sign*1200000;
-              else if(f.openEnds===1) score += sign*260000;
-              else score += sign*30000;
-            }else if(f.len===3){
-              if(f.openEnds===2) score += sign*35000;
-              else if(f.openEnds===1) score += sign*9000;
-              else score += sign*900;
-            }else if(f.len===2){
-              if(f.openEnds===2) score += sign*1200;
-              else if(f.openEnds===1) score += sign*320;
-              else score += sign*40;
-            }
+  function add(col, sign){
+    for(let r=0;r<SIZE;r++){
+      for(let c=0;c<SIZE;c++){
+        if(b[r][c]!==col) continue;
+        for(const [dr,dc] of checkDirs){
+          const f = lineFeature(b,r,c,col,dr,dc);
+          // exact-five: long chains aren't directly winning; keep weights moderate
+          if(f.len>=4){
+            score += sign * (f.open===2 ? 700000 : f.open===1 ? 160000 : 24000);
+          }else if(f.len===3){
+            score += sign * (f.open===2 ? 28000 : f.open===1 ? 7600 : 700);
+          }else if(f.len===2){
+            score += sign * (f.open===2 ? 950 : f.open===1 ? 240 : 28);
           }
         }
       }
     }
-    addFor(cpuCol, +1);
-    addFor(humCol, -1);
-
-    const cand = candidateMoves(b, 3);
-    const cpuWins = countImmediateWins(b, cpuCol, cand);
-    const humWins = countImmediateWins(b, humCol, cand);
-
-    if(cpuWins >= 2) score += 5e8;
-    else if(cpuWins === 1) score += 8e6;
-
-    if(humWins >= 2) score -= 6e8;
-    else if(humWins === 1) score -= 1.2e7;
-
-    return score;
   }
 
-  function keyOf(b, turnCol){
-    let s = String(turnCol) + "|";
-    for(let r=PLAY_MIN;r<=PLAY_MAX;r++){
-      for(let c=PLAY_MIN;c<=PLAY_MAX;c++){
-        s += b[r][c];
+  add(me, +1);
+  add(op, -1);
+
+  // immediate threats count (0/1/2)
+  const myWin = countImmediateExactWins(b, me);
+  const opWin = countImmediateExactWins(b, op);
+  if(myWin>=2) score += 5e8;
+  else if(myWin===1) score += 8e6;
+  if(opWin>=2) score -= 6e8;
+  else if(opWin===1) score -= 1.2e7;
+
+  return score;
+}
+
+function countImmediateExactWins(b, col){
+  let cnt=0;
+  for(const [r,c] of legalMoves(b)){
+    const res = applyMove(b,r,c,col);
+    if(!res) continue;
+    if(hasExactFive(res.board, col)){
+      cnt++;
+      if(cnt>=2) return 2;
+    }
+  }
+  return cnt;
+}
+
+// Candidate moves near existing stones for speed
+function candidateMoves(b, radius){
+  const {stones} = boardCount(b);
+  if(stones===0){
+    return [[3,3],[3,2],[2,3],[3,4],[4,3],[2,2],[4,4],[2,4],[4,2]];
+  }
+  if(stones>=36) return legalMoves(b);
+
+  const set = new Set();
+  for(let r=0;r<SIZE;r++){
+    for(let c=0;c<SIZE;c++){
+      if(b[r][c]===EMPTY) continue;
+      for(let dr=-radius; dr<=radius; dr++){
+        for(let dc=-radius; dc<=radius; dc++){
+          const rr=r+dr, cc=c+dc;
+          if(inside(rr,cc) && b[rr][cc]===EMPTY){
+            set.add(rr*10+cc);
+          }
+        }
       }
     }
-    return s;
+  }
+  const out=[];
+  for(const v of set){
+    out.push([Math.floor(v/10), v%10]);
+  }
+  return out;
+}
+
+function orderMoves(b, col, maxCand){
+  const {stones} = boardCount(b);
+  const radius = stones<=10 ? 3 : 4;
+
+  const cand = candidateMoves(b, radius);
+  const op = opp(col);
+
+  // squares that block opponent's immediate win
+  const oppWinSet = new Set();
+  for(const [r,c] of cand){
+    const t = applyMove(b,r,c,op);
+    if(t && hasExactFive(t.board, op)) oppWinSet.add(r*10+c);
   }
 
-  function params(){
-    const d = $difficulty.value;
-    if(d==="easy")   return {timeMs: 120,   maxCand: 16, radius: 2, baseDepth: 1, yieldEvery: 1200};
-    if(d==="medium") return {timeMs: 300,   maxCand: 16, radius: 2, baseDepth: 2, yieldEvery: 1500};
+  const scored = [];
+  for(const [r,c] of cand){
+    const t = applyMove(b,r,c,col);
+    if(!t) continue;
 
-    // ★ hard（最強+）：局面（石数）で最大思考時間を可変にする
-    const stones = countStones(board);
+    const winNow = hasExactFive(t.board, col) ? 1 : 0;
+    const blocks = oppWinSet.has(r*10+c) ? 1 : 0;
 
-    // 指定：6手目まで最大3秒 / 10手目まで最大10秒 / それ以降30秒
-    const timeMs = (stones <= 6) ? 3000 : (stones <= 10) ? 10000 : 30000;
+    // fork check (cheap)
+    const forks = countImmediateExactWins(t.board, col);
+    const forkBonus = forks>=2 ? 1 : forks===1 ? 0.2 : 0;
 
-    // 序盤は候補/半径も少し抑えてテンポUP（強さは維持しつつ）
-    let maxCand = 22, radius = 4;
-    if(stones <= 6){ maxCand = 18; radius = 3; }
-    else if(stones <= 10){ maxCand = 20; radius = 3; }
-    else { maxCand = 24; radius = 4; }
+    const rough = evalPos(t.board, col);
 
-    return {timeMs, maxCand, radius, baseDepth: 3, yieldEvery: 1800};
+    const pri = winNow*1e18 + blocks*8e17 + forkBonus*4e16 + rough;
+    scored.push({r,c,pri});
+  }
+  scored.sort((a,b)=> b.pri - a.pri);
+  return scored.slice(0, maxCand).map(x=>({r:x.r,c:x.c}));
+}
+
+async function pickCpuMove(b, col, budgetMs, difficulty){
+  // quick tactics first (all levels)
+  const win = immediateWinMove(b, col);
+  if(win) return win;
+  const block = blockOpponentWinMove(b, col);
+  if(block) return block;
+
+  if(difficulty==="easy"){
+    // pick from top few ordered moves, with randomness
+    const moves = orderMoves(b, col, 10);
+    if(!moves.length) return null;
+    return moves[Math.floor(Math.random()*Math.min(3,moves.length))];
   }
 
-  function orderedMoves(b, col, maxCand, radius){
-    const o = opp(col);
-    const cand = candidateMoves(b, radius);
-    const scored=[];
+  if(difficulty==="medium"){
+    // shallow minimax (depth 3-4) with small budget
+    return await iterativeDeepening(b, col, Math.min(budgetMs, 2500), 8, 10);
+  }
 
-    const oppWinSquares = new Set();
-    for(const [r,c] of cand){
-      if(b[r][c]!==EMPTY) continue;
-      const nb = sim(b,r,c,o);
-      if(nb && hasFive(nb, o)) oppWinSquares.add(`${r},${c}`);
-    }
+  // strong
+  // more candidates, deeper search within time budget
+  const {stones} = boardCount(b);
+  const maxCand = stones<=10 ? 18 : 26;
+  return await iterativeDeepening(b, col, budgetMs, maxCand, 18);
+}
 
-    for(const [r,c] of cand){
-      if(b[r][c]!==EMPTY) continue;
-      const nb = sim(b,r,c,col);
-      if(!nb) continue;
+/* =========================
+   Alpha-beta + Iterative deepening
+========================= */
+function terminalScore(b, me){
+  const op = opp(me);
+  if(hasExactFive(b, me)) return 1e15;
+  if(hasExactFive(b, op)) return -1e15;
+  if(legalMoves(b).length===0) return 0;
+  return null;
+}
 
-      const winNow = hasFive(nb, col) ? 1 : 0;
-      const blocksOppWin = oppWinSquares.has(`${r},${c}`) ? 1 : 0;
+async function iterativeDeepening(rootBoard, me, budgetMs, maxCand, depthCap){
+  const start = nowMs();
+  const deadline = start + budgetMs;
 
-      const nextCand = candidateMoves(nb, radius);
-      const forks = countImmediateWins(nb, col, nextCand); // 0/1/2
-      const forkBonus = (forks>=2) ? 1 : (forks===1 ? 0.2 : 0);
+  let bestMove = null;
 
-      let local=0;
-      for(const [dr,dc] of checkDirs){
-        const f=lineFeature(nb, r, c, col, dr, dc);
-        local = Math.max(local, f.len*10 + f.openEnds*5);
+  // iterative
+  for(let depth=3; depth<=depthCap; depth++){
+    if(nowMs() > deadline) break;
+
+    const moves = orderMoves(rootBoard, me, maxCand);
+    if(!moves.length) break;
+
+    let localBest = bestMove || moves[0];
+    let localBestVal = -Infinity;
+
+    for(const m of moves){
+      if(nowMs() > deadline) break;
+      const t = applyMove(rootBoard, m.r, m.c, me);
+      if(!t) continue;
+
+      const val = await alphabeta(t.board, depth-1, -Infinity, Infinity, me, opp(me), deadline);
+      if(val > localBestVal){
+        localBestVal = val;
+        localBest = m;
       }
 
-      const rough = evaluate(nb, col);
-
-      const pri =
-        winNow*1e18 +
-        blocksOppWin*8e17 +
-        forkBonus*4e16 +
-        local*1e6 +
-        rough;
-
-      scored.push({r,c, pri});
+      // yield to keep UI responsive
+      if(depth>=5) await new Promise(r=>setTimeout(r,0));
     }
 
-    scored.sort((a,b)=>b.pri-a.pri);
-    return scored.slice(0, maxCand).map(x=>[x.r,x.c]);
+    bestMove = localBest;
   }
 
-  async function yieldToUI(){
-    await new Promise(requestAnimationFrame);
+  return bestMove;
+}
+
+async function alphabeta(b, depth, alpha, beta, me, turn, deadline){
+  if(nowMs() > deadline) return evalPos(b, me);
+
+  const term = terminalScore(b, me);
+  if(term !== null) return term;
+
+  if(depth===0){
+    // horizon threat bias
+    const myWin = countImmediateExactWins(b, me);
+    const opWin = countImmediateExactWins(b, opp(me));
+    if(myWin>=1) return 9e14;
+    if(opWin>=1) return -9e14;
+    return evalPos(b, me);
   }
 
-  async function minimaxAsync(b, depth, alpha, beta, maximizing, cpuCol, turnCol, deadline, tt, ctx){
-    if(ctx.tok !== token) return evaluate(b, cpuCol);
-    if(performance.now() > deadline) return evaluate(b, cpuCol);
+  const maximizing = (turn===me);
+  let best = maximizing ? -Infinity : Infinity;
 
-    ctx.nodes++;
-    if(ctx.nodes % ctx.yieldEvery === 0){
-      await yieldToUI();
-      if(ctx.tok !== token) return evaluate(b, cpuCol);
-      if(performance.now() > deadline) return evaluate(b, cpuCol);
-    }
+  const {stones} = boardCount(b);
+  const maxCand = stones<=10 ? 18 : 26;
+  const moves = orderMoves(b, turn, maxCand);
 
-    const humCol = opp(cpuCol);
+  if(!moves.length) return evalPos(b, me);
 
-    if(hasFive(b, cpuCol)) return 1e15;
-    if(hasFive(b, humCol)) return -1e15;
+  for(const m of moves){
+    if(nowMs() > deadline) break;
+    const t = applyMove(b, m.r, m.c, turn);
+    if(!t) continue;
 
-    if(depth === 0){
-      const cand = candidateMoves(b, 3);
-      const cpuWins = countImmediateWins(b, cpuCol, cand);
-      const humWins = countImmediateWins(b, humCol, cand);
-      if(cpuWins >= 1) return 9e14;
-      if(humWins >= 1) return -9e14;
-      return evaluate(b, cpuCol);
-    }
+    const val = await alphabeta(t.board, depth-1, alpha, beta, me, opp(turn), deadline);
 
-    const k = keyOf(b, turnCol) + "|d" + depth + "|m" + (maximizing?1:0);
-    const cached = tt.get(k);
-    if(cached !== undefined) return cached;
-
-    const {maxCand, radius} = params();
-    const moves = orderedMoves(b, turnCol, maxCand, radius);
-    if(moves.length===0){
-      const v = evaluate(b, cpuCol);
-      tt.set(k, v);
-      return v;
-    }
-
-    let best;
     if(maximizing){
-      best = -Infinity;
-      for(const [r,c] of moves){
-        const nb = sim(b,r,c,turnCol);
-        if(!nb) continue;
-        const v = await minimaxAsync(nb, depth-1, alpha, beta, false, cpuCol, opp(turnCol), deadline, tt, ctx);
-        if(v > best) best = v;
-        if(best > alpha) alpha = best;
-        if(beta <= alpha) break;
-      }
+      if(val > best) best = val;
+      if(best > alpha) alpha = best;
     }else{
-      best = Infinity;
-      for(const [r,c] of moves){
-        const nb = sim(b,r,c,turnCol);
-        if(!nb) continue;
-        const v = await minimaxAsync(nb, depth-1, alpha, beta, true, cpuCol, opp(turnCol), deadline, tt, ctx);
-        if(v < best) best = v;
-        if(best < beta) beta = best;
-        if(beta <= alpha) break;
-      }
+      if(val < best) best = val;
+      if(best < beta) beta = best;
     }
-
-    tt.set(k, best);
-    return best;
+    if(beta <= alpha) break;
   }
 
-  async function chooseCpuMoveAsync(){
-    const cpuCol = cpu();
-    const humCol = human();
-    const {timeMs, maxCand, radius, baseDepth, yieldEvery} = params();
+  return best;
+}
 
-    const baseMoves = orderedMoves(board, cpuCol, maxCand, radius);
-    for(const [r,c] of baseMoves){
-      const nb = sim(board,r,c,cpuCol);
-      if(nb && hasFive(nb, cpuCol)) return [r,c];
-    }
-
-    // 相手の即勝ち（可能ならブロック）
-    const humCand = candidateMoves(board, radius);
-    for(const [r,c] of humCand){
-      if(board[r][c]!==EMPTY) continue;
-      const nb = sim(board,r,c,humCol);
-      if(nb && hasFive(nb, humCol)){
-        if(playable(r,c)) return [r,c];
-      }
-    }
-
-    const start = performance.now();
-    const deadline = start + timeMs;
-
-    // ★ 3秒を超える可能性がある時だけ「思考中…」を予約
-    const myTok = token;
-    let thinkingTimer = null;
-    if(timeMs > 3000){
-      thinkingTimer = setTimeout(() => {
-        if(myTok === token && cpuThinking) showThinking();
-      }, 3000);
-    }
-
-    const tt = new Map();
-    const ctx = { tok: myTok, nodes: 0, yieldEvery };
-
-    let bestMove = baseMoves[0] || [4,4];
-    let depth = baseDepth;
-
-    const maxDepthCap = 14;
-
-    while(performance.now() < deadline && ctx.tok === token){
-      const moves = (() => {
-        const m = orderedMoves(board, cpuCol, maxCand, radius);
-        const key = `${bestMove[0]},${bestMove[1]}`;
-        const idx = m.findIndex(x => `${x[0]},${x[1]}` === key);
-        if(idx > 0){
-          const [bm] = m.splice(idx,1);
-          m.unshift(bm);
-        }
-        return m;
-      })();
-
-      let localBestMove = bestMove;
-      let localBestVal  = -Infinity;
-
-      for(const [r,c] of moves){
-        if(performance.now() > deadline || ctx.tok !== token) break;
-        const nb = sim(board, r, c, cpuCol);
-        if(!nb) continue;
-
-        const v = await minimaxAsync(nb, depth-1, -Infinity, Infinity, false, cpuCol, humCol, deadline, tt, ctx);
-        if(v > localBestVal){
-          localBestVal = v;
-          localBestMove = [r,c];
-        }
-      }
-
-      bestMove = localBestMove;
-
-      depth++;
-      if(depth > maxDepthCap) break;
-
-      await yieldToUI();
-    }
-
-    if(thinkingTimer) clearTimeout(thinkingTimer);
-    return bestMove;
-  }
-
-  // ---------------------------
-  // ゲーム進行
-  // ---------------------------
-
-  function move(r,c){
-    if(gameOver||!playable(r,c)||board[r][c]!==EMPTY)return;
-    if(isCpuMode()&&!isHumanTurn())return;
-    if(cpuThinking) return;
-
-    history.push({board:clone(board),turn,gameOver});
-    board[r][c]=turn;
-    flips(board,r,c,turn).forEach(([x,y])=>board[x][y]=turn);
-
-    if(hasFive(board,turn)){
-      gameOver=true; render(); updateStatus(`${turn===BLACK?"黒":"白"}の勝ち！`);
-      return;
-    }
-    turn=opp(turn); render(); updateStatus(); maybeCpu();
-  }
-
-  async function maybeCpu(){
-    if(!isCpuMode()||gameOver||turn!==cpu()) return;
-
-    cpuThinking = true;
-    const myTok = ++token;
-
-    updateStatus();
-    await new Promise(r => setTimeout(r, 0));
-
-    try{
-      const [r,c] = await chooseCpuMoveAsync();
-      if(myTok !== token) return;
-
-      history.push({board:clone(board),turn,gameOver});
-
-      let rr=r, cc=c;
-      if(!(playable(rr,cc) && board[rr][cc]===EMPTY)){
-        const m = legal(board);
-        if(!m.length) return;
-        rr=m[0][0]; cc=m[0][1];
-      }
-
-      board[rr][cc]=turn;
-      flips(board,rr,cc,turn).forEach(([x,y])=>board[x][y]=turn);
-
-      if(hasFive(board,turn)){
-        gameOver=true;
-        render();
-        hideThinking();
-        cpuThinking=false;
-        updateStatus(`${turn===BLACK?"黒":"白"}の勝ち！`);
-        return;
-      }
-
-      turn=opp(turn);
-      render();
-      hideThinking();
-      cpuThinking=false;
-      updateStatus();
-    }finally{
-      hideThinking();
-      cpuThinking=false;
-      updateStatus();
-    }
-  }
-
-  function updateStatus(msg){
-    if(msg){ $status.textContent=msg; return; }
-    if(gameOver){ $status.textContent="ゲーム終了"; return; }
-
-    if(!isCpuMode()){
-      $status.textContent = (turn===BLACK?"黒の手番":"白の手番");
-      return;
-    }
-
-    const d = $difficulty.value==="easy"?"弱":$difficulty.value==="medium"?"中":"強（最強+）";
-    const stones = countStones(board);
-    const t = (stones <= 6) ? "最大3秒" : (stones <= 10) ? "最大10秒" : "最大30秒";
-    $status.textContent = `手番：${turn===BLACK?"黒":"白"}${isHumanTurn()?"（あなた）":"（CPU）"} / 難易度：${d} / 思考：${t}`;
-  }
-
-  function render(){
-    const show = showSafe && !gameOver && (!isCpuMode() || isHumanTurn());
-    const safes = show ? safeMoves(board,turn) : new Set();
-    const cls = turn===WHITE ? "safe-red" : "safe-blue";
-
-    $board.innerHTML="";
-    for(let r=0;r<N;r++)for(let c=0;c<N;c++){
-      const cell=document.createElement("div");
-      cell.className="pt"+(playable(r,c)?"":" disabled");
-      cell.onclick=()=>move(r,c);
-
-      if(board[r][c]){
-        const d=document.createElement("div");
-        d.className="disc "+(board[r][c]===BLACK?"black":"white");
-        cell.appendChild(d);
-      }else if(playable(r,c)){
-        if(show && safes.has(`${r},${c}`)){
-          const sf=document.createElement("div");
-          sf.className="safe-fill "+cls;
-          cell.appendChild(sf);
-        }
-        const dot=document.createElement("div");
-        dot.className="dot";
-        cell.appendChild(dot);
-      }
-      $board.appendChild(cell);
-    }
-  }
-
-  // UIイベント
-  document.getElementById("undoBtn").onclick=()=>{
-    token++; // 思考キャンセル
-    cpuThinking=false;
-    hideThinking();
-
-    if(!history.length) return;
-    let s=history.pop(); board=clone(s.board); turn=s.turn; gameOver=s.gameOver;
-    render(); updateStatus();
-
-    if(isCpuMode() && !isHumanTurn() && history.length){
-      s=history.pop(); board=clone(s.board); turn=s.turn; gameOver=s.gameOver;
-      render(); updateStatus();
-    }
-  };
-
-  document.getElementById("restartBtn").onclick=init;
-
-  $mode.onchange=init;
-  $humanColor.onchange=init;
-  $difficulty.onchange=init;
-
-  $safeBtn.onclick=()=>{
-    showSafe=!showSafe;
-    $safeBtn.textContent="安全手："+(showSafe?"ON":"OFF");
-    render();
-  };
-
-  init();
-})();
+/* =========================
+   Init
+========================= */
+newGame();
+updateUI();
 </script>
+
 </body>
 </html>
