@@ -6,8 +6,6 @@
 <title>五目オセロ（5個ちょうど勝利）</title>
 <style>
   :root{
-    --bg:#0b0f14;
-    --panel:#111826;
     --text:#e6eef8;
     --muted:#9fb0c5;
     --wood:#caa56a;
@@ -91,14 +89,6 @@
     font-size:18px;
     box-shadow:0 20px 60px rgba(0,0,0,.55);
   }
-  .kbd{
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    background:rgba(255,255,255,.06);
-    border:1px solid rgba(255,255,255,.10);
-    padding:1px 6px;
-    border-radius:8px;
-    font-size:12px;
-  }
 </style>
 </head>
 <body>
@@ -107,8 +97,8 @@
   <div class="card">
     <canvas id="board" width="520" height="520"></canvas>
     <div class="tiny" style="margin-top:8px; line-height:1.6;">
-      盤は<strong>7×7の交点</strong>（a1〜a7 / b1〜b7）。外枠には置けません。<br>
-      反転はオセロと同じ。勝利条件は<strong>「5個ちょうど」</strong>（6連以上は勝ちになりません）。
+      ＜ルール＞<br>
+      盤は7×7の交点。外枠には置けません。反転はオセロと同じ。勝利条件は「5個ちょうど」（6連以上は勝ちになりません）。
     </div>
   </div>
 
@@ -133,7 +123,7 @@
         <select id="difficulty">
           <option value="easy">弱</option>
           <option value="medium">中</option>
-          <option value="strong">強（最大30秒）</option>
+          <option value="strong">強</option>
         </select>
       </span>
     </div>
@@ -162,14 +152,6 @@
         クリック/タップで着手。Undoは直前手を戻します（CPU戦では「あなたの手＋CPUの手」をまとめて戻します）。
       </div>
     </div>
-
-    <hr style="border:none; border-top:1px solid rgba(43,58,82,.6); margin:12px 0;">
-
-    <div class="tiny" style="line-height:1.7;">
-      CPU思考時間（強）: <span class="kbd">6手目まで最大3秒</span> / <span class="kbd">10手目まで最大10秒</span> / 以降<span class="kbd">最大30秒</span><br>
-      思考が<span class="kbd">3秒超</span>なら中央に「思考中…」を表示します。<br>
-      CPU着手はテンポ調整として<strong>最低0.5秒</strong>空けます。
-    </div>
   </div>
 </div>
 
@@ -194,8 +176,8 @@
   ];
   const checkDirs = [[1,0],[0,1],[1,1],[1,-1]];
   const opp = c => (c===BLACK?WHITE:BLACK);
-
   const inside = (r,c) => (r>=0 && r<SIZE && c>=0 && c<SIZE);
+
   const makeBoard = () => Array.from({length: SIZE}, () => Array(SIZE).fill(EMPTY));
   const cloneBoard = b => b.map(row => row.slice());
 
@@ -248,8 +230,7 @@
   }
 
   /* =========================
-     Win condition: exact five
-     + return line for drawing
+     Win: exact five + line
   ========================= */
   function findExactFiveLine(b, col){
     for(let r=0;r<SIZE;r++){
@@ -260,7 +241,6 @@
           const pr=r-dr, pc=c-dc;
           if(inside(pr,pc) && b[pr][pc]===col) continue; // not a start
 
-          // check 5
           let ok=true;
           for(let k=0;k<5;k++){
             const rr=r+dr*k, cc=c+dc*k;
@@ -268,9 +248,8 @@
           }
           if(!ok) continue;
 
-          // 6th must NOT be same color
           const nr=r+dr*5, nc=c+dc*5;
-          if(inside(nr,nc) && b[nr][nc]===col) continue;
+          if(inside(nr,nc) && b[nr][nc]===col) continue; // 6+ is NOT win
 
           return { from:{r,c}, to:{ r:r+dr*4, c:c+dc*4 }, col };
         }
@@ -558,7 +537,14 @@
     return false;
   }
 
-  function playAt(r,c){
+  /* =========================
+     Timing helpers
+  ========================= */
+  const sleep = ms => new Promise(r=>setTimeout(r,ms));
+  const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
+  const nowMs = () => performance.now();
+
+  async function playAt(r,c){
     if(game.over) return;
     if(isCpuThinking) return;
     if(game.mode==="cpu" && game.turn===game.cpuCol) return;
@@ -572,16 +558,20 @@
     maybeEndAfterMove();
     pushHistory();
     updateUI();
-    maybeCpuMove();
+
+    // Important: flush paint before CPU starts thinking (removes input lag)
+    if(game.mode==="cpu" && !game.over){
+      await nextFrame();
+      await sleep(0);
+      maybeCpuMove();
+    }
   }
 
   function undo(){
     if(isCpuThinking) return;
     if(game.history.length<=1) return;
-
     if(game.mode==="cpu") popHistory(2);
     else popHistory(1);
-
     updateUI();
   }
 
@@ -610,20 +600,27 @@
   }
 
   /* =========================
-     CPU AI + min delay (0.5s)
+     CPU AI (Strong) tweaks:
+     - New time budget: 3s / 7s / 20s
+     - PV priority
+     - TT (transposition table)
+     - Dynamic candidate count
+     - Quiescence search (tactical extension)
+     - Root extensions (top K root moves +1 ply)
   ========================= */
-  const sleep = ms => new Promise(r=>setTimeout(r,ms));
-  const nowMs = () => performance.now();
 
   function timeBudgetMs(){
     const stones = boardCount(game.board).stones;
     const ply = stones + 1;
     const d = elDiff.value;
-    if(d==="easy") return 200;
-    if(d==="medium") return 1200;
+
+    if(d==="easy") return 250;
+    if(d==="medium") return 1500;
+
+    // strong: new budgets
     if(ply <= 6) return 3000;
-    if(ply <= 10) return 10000;
-    return 30000;
+    if(ply <= 14) return 7000;
+    return 20000;
   }
 
   async function maybeCpuMove(){
@@ -636,7 +633,6 @@
 
     const budget = timeBudgetMs();
     const cpuTurnStart = nowMs();
-
     const thinkLabelTimer = setTimeout(()=>{ showThinking(true); }, 3000);
 
     try{
@@ -786,6 +782,7 @@
     const cand = candidateMoves(b, radius);
     const op = opp(col);
 
+    // detect opponent immediate wins (to prioritize blocks)
     const oppWinSet = new Set();
     for(const [r,c] of cand){
       const t = applyMove(b,r,c,op);
@@ -811,25 +808,6 @@
     return scored.slice(0, maxCand).map(x=>({r:x.r,c:x.c}));
   }
 
-  async function pickCpuMove(b, col, budgetMs, difficulty){
-    const win = immediateWinMove(b, col);
-    if(win) return win;
-    const block = blockOpponentWinMove(b, col);
-    if(block) return block;
-
-    if(difficulty==="easy"){
-      const moves = orderMoves(b, col, 10);
-      if(!moves.length) return null;
-      return moves[Math.floor(Math.random()*Math.min(3,moves.length))];
-    }
-    if(difficulty==="medium"){
-      return await iterativeDeepening(b, col, Math.min(budgetMs, 2500), 8, 10);
-    }
-    const {stones} = boardCount(b);
-    const maxCand = stones<=10 ? 18 : 26;
-    return await iterativeDeepening(b, col, budgetMs, maxCand, 18);
-  }
-
   function terminalScore(b, me){
     const op = opp(me);
     if(hasExactFive(b, me)) return 1e15;
@@ -838,66 +816,116 @@
     return null;
   }
 
-  async function iterativeDeepening(rootBoard, me, budgetMs, maxCand, depthCap){
-    const start = nowMs();
-    const deadline = start + budgetMs;
-    let bestMove = null;
+  // --- TT (simple, per-search) ---
+  const TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2;
 
-    for(let depth=3; depth<=depthCap; depth++){
-      if(nowMs() > deadline) break;
-
-      const moves = orderMoves(rootBoard, me, maxCand);
-      if(!moves.length) break;
-
-      let localBest = bestMove || moves[0];
-      let localBestVal = -Infinity;
-
-      for(const m of moves){
-        if(nowMs() > deadline) break;
-        const t = applyMove(rootBoard, m.r, m.c, me);
-        if(!t) continue;
-
-        const val = await alphabeta(t.board, depth-1, -Infinity, Infinity, me, opp(me), deadline);
-        if(val > localBestVal){
-          localBestVal = val;
-          localBest = m;
-        }
-        if(depth>=5) await new Promise(r=>setTimeout(r,0));
+  function boardKey(b, turn){
+    // 7x7 = 49 cells. Simple string key is ok; keep it compact.
+    // "t|" + digits 0/1/2
+    let s = (turn===BLACK ? "B|" : "W|");
+    for(let r=0;r<SIZE;r++){
+      const row = b[r];
+      for(let c=0;c<SIZE;c++){
+        s += row[c]; // 0/1/2
       }
-
-      bestMove = localBest;
     }
-    return bestMove;
+    return s;
   }
 
-  async function alphabeta(b, depth, alpha, beta, me, turn, deadline){
+  function dynamicMaxCand(stones, depth, remainMs){
+    // Wide early, sharper deep, shrink when time is tight
+    if(stones <= 2) return 22;
+    let base = (stones <= 10) ? 20 : 26;
+    if(depth >= 7) base -= 6;
+    if(depth >= 9) base -= 4;
+    if(remainMs < 900) base -= 6;
+    if(remainMs < 450) base -= 4;
+    return Math.max(12, Math.min(30, base));
+  }
+
+  function shouldQuiesce(b, me){
+    const op = opp(me);
+    // "noisy" if immediate win threat exists or fork exists
+    if(countImmediateExactWins(b, me) >= 1) return true;
+    if(countImmediateExactWins(b, op) >= 1) return true;
+    return false;
+  }
+
+  function forcingMoves(b, turn){
+    // Only "tactical" moves: winning, blocking opponent immediate win, or creating fork
+    const win = immediateWinMove(b, turn);
+    if(win) return [win];
+
+    const op = opp(turn);
+    const needBlock = blockOpponentWinMove(b, turn);
+    const out = [];
+
+    // collect several block candidates (could be >1 threats)
+    const moves = legalMoves(b);
+    for(const [r,c] of moves){
+      const tOpp = applyMove(b,r,c,op);
+      if(tOpp && hasExactFive(tOpp.board, op)){
+        out.push({r,c}); // blocking square (by playing there as turn)
+      }
+    }
+    if(out.length){
+      // ensure unique
+      const seen = new Set();
+      const uniq = [];
+      for(const m of out){
+        const k = m.r*10+m.c;
+        if(!seen.has(k)){ seen.add(k); uniq.push(m); }
+      }
+      return uniq;
+    }
+
+    // forks
+    const cand = orderMoves(b, turn, 18);
+    const forks = [];
+    for(const m of cand){
+      const t = applyMove(b,m.r,m.c,turn);
+      if(!t) continue;
+      if(countImmediateExactWins(t.board, turn) >= 2){
+        forks.push(m);
+        if(forks.length>=6) break;
+      }
+    }
+    return forks;
+  }
+
+  async function quiescence(b, qDepth, alpha, beta, me, turn, deadline, tt){
     if(nowMs() > deadline) return evalPos(b, me);
 
     const term = terminalScore(b, me);
     if(term !== null) return term;
 
-    if(depth===0){
-      const myWin = countImmediateExactWins(b, me);
-      const opWin = countImmediateExactWins(b, opp(me));
-      if(myWin>=1) return 9e14;
-      if(opWin>=1) return -9e14;
-      return evalPos(b, me);
+    const stand = evalPos(b, me);
+    if(qDepth <= 0) return stand;
+
+    // If position is calm, just stand pat
+    if(!shouldQuiesce(b, me)) return stand;
+
+    // alpha-beta stand-pat handling
+    if(turn === me){
+      if(stand > alpha) alpha = stand;
+      if(alpha >= beta) return alpha;
+    }else{
+      if(stand < beta) beta = stand;
+      if(alpha >= beta) return beta;
     }
+
+    const moves = forcingMoves(b, turn);
+    if(!moves.length) return stand;
 
     const maximizing = (turn===me);
     let best = maximizing ? -Infinity : Infinity;
-
-    const {stones} = boardCount(b);
-    const maxCand = stones<=10 ? 18 : 26;
-    const moves = orderMoves(b, turn, maxCand);
-    if(!moves.length) return evalPos(b, me);
 
     for(const m of moves){
       if(nowMs() > deadline) break;
       const t = applyMove(b, m.r, m.c, turn);
       if(!t) continue;
 
-      const val = await alphabeta(t.board, depth-1, alpha, beta, me, opp(turn), deadline);
+      const val = await quiescence(t.board, qDepth-1, alpha, beta, me, opp(turn), deadline, tt);
 
       if(maximizing){
         if(val > best) best = val;
@@ -908,7 +936,155 @@
       }
       if(beta <= alpha) break;
     }
+    return (best===Infinity || best===-Infinity) ? stand : best;
+  }
+
+  async function alphabeta(b, depth, alpha, beta, me, turn, deadline, tt){
+    if(nowMs() > deadline) return evalPos(b, me);
+
+    const term = terminalScore(b, me);
+    if(term !== null) return term;
+
+    // TT probe
+    const key = boardKey(b, turn);
+    const hit = tt.get(key);
+    if(hit && hit.depth >= depth){
+      if(hit.flag === TT_EXACT) return hit.val;
+      if(hit.flag === TT_LOWER) alpha = Math.max(alpha, hit.val);
+      else if(hit.flag === TT_UPPER) beta = Math.min(beta, hit.val);
+      if(beta <= alpha) return hit.val;
+    }
+
+    if(depth === 0){
+      // Quiescence: only extend tactically "noisy" positions a bit
+      const val = await quiescence(b, 2, alpha, beta, me, turn, deadline, tt);
+      tt.set(key, {depth, val, flag: TT_EXACT});
+      return val;
+    }
+
+    const maximizing = (turn===me);
+    let best = maximizing ? -Infinity : Infinity;
+
+    const {stones} = boardCount(b);
+    const remain = Math.max(0, deadline - nowMs());
+    const maxCand = dynamicMaxCand(stones, depth, remain);
+    const moves = orderMoves(b, turn, maxCand);
+    if(!moves.length){
+      const val = evalPos(b, me);
+      tt.set(key, {depth, val, flag: TT_EXACT});
+      return val;
+    }
+
+    const a0 = alpha, b0 = beta;
+
+    for(const m of moves){
+      if(nowMs() > deadline) break;
+      const t = applyMove(b, m.r, m.c, turn);
+      if(!t) continue;
+
+      const val = await alphabeta(t.board, depth-1, alpha, beta, me, opp(turn), deadline, tt);
+
+      if(maximizing){
+        if(val > best) best = val;
+        if(best > alpha) alpha = best;
+      }else{
+        if(val < best) best = val;
+        if(best < beta) beta = best;
+      }
+      if(beta <= alpha) break;
+    }
+
+    // TT store with bound type
+    let flag = TT_EXACT;
+    if(best <= a0) flag = TT_UPPER;
+    else if(best >= b0) flag = TT_LOWER;
+
+    // keep TT bounded a bit (per-search, but still)
+    if(tt.size > 60000){
+      tt.clear();
+    }
+    tt.set(key, {depth, val: best, flag});
     return best;
+  }
+
+  async function iterativeDeepening(rootBoard, me, budgetMs, depthCap){
+    const start = nowMs();
+    const deadline = start + budgetMs;
+
+    const tt = new Map(); // per move (cleared each pick)
+    let bestMove = null;
+
+    // Root extensions: top K moves get +1 ply
+    const {stones} = boardCount(rootBoard);
+    const rootTopK = stones <= 10 ? 6 : 4;
+
+    for(let depth=3; depth<=depthCap; depth++){
+      if(nowMs() > deadline) break;
+
+      const remain = Math.max(0, deadline - nowMs());
+      const maxCand = dynamicMaxCand(stones, depth, remain);
+      let moves = orderMoves(rootBoard, me, maxCand);
+      if(!moves.length) break;
+
+      // PV priority
+      if(bestMove){
+        const idx = moves.findIndex(m => m.r===bestMove.r && m.c===bestMove.c);
+        if(idx > 0){
+          const [pv] = moves.splice(idx,1);
+          moves.unshift(pv);
+        }
+      }
+
+      let localBest = bestMove || moves[0];
+      let localBestVal = -Infinity;
+
+      for(let i=0;i<moves.length;i++){
+        if(nowMs() > deadline) break;
+
+        const m = moves[i];
+        const t = applyMove(rootBoard, m.r, m.c, me);
+        if(!t) continue;
+
+        // Root extension: top-K moves get one extra ply
+        const extra = (i < rootTopK) ? 1 : 0;
+        const searchDepth = Math.max(0, depth - 1 + extra);
+
+        const val = await alphabeta(t.board, searchDepth, -Infinity, Infinity, me, opp(me), deadline, tt);
+
+        if(val > localBestVal){
+          localBestVal = val;
+          localBest = m;
+        }
+
+        // yield occasionally (keeps iPhone responsive)
+        if(depth >= 5) await sleep(0);
+      }
+
+      bestMove = localBest;
+    }
+    return bestMove;
+  }
+
+  async function pickCpuMove(b, col, budgetMs, difficulty){
+    // Tactical shortcuts first
+    const win = immediateWinMove(b, col);
+    if(win) return win;
+    const block = blockOpponentWinMove(b, col);
+    if(block) return block;
+
+    if(difficulty==="easy"){
+      const moves = orderMoves(b, col, 10);
+      if(!moves.length) return null;
+      return moves[Math.floor(Math.random()*Math.min(3,moves.length))];
+    }
+
+    if(difficulty==="medium"){
+      // medium: still uses TT + quiescence + PV etc, but lower cap
+      return await iterativeDeepening(b, col, Math.min(budgetMs, 2000), 9);
+    }
+
+    // strong: cap tuned for mobile
+    return await iterativeDeepening(b, col, budgetMs, 14);
   }
 
   /* =========================
