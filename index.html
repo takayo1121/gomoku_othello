@@ -100,6 +100,9 @@
       ＜ルール＞<br>
       <span id="ruleText"></span>
     </div>
+    <div class="tiny" style="margin-top:8px;">
+      定跡（自己対戦）: <span id="bookStatus">読み込み中…</span>
+    </div>
   </div>
 
   <div class="card">
@@ -189,6 +192,28 @@
       return { type:"cells", size:6, lines:7 }; // 6x6 cells, 7 grid lines
     }
     return { type:"points", size:7, lines:7 };  // 7x7 points, 7 grid lines
+  }
+
+  /* =========================
+     Opening Book (self-play)
+     - Place opening_book.json next to this HTML.
+  ========================= */
+  let openingBook = null;
+  const elBookStatus = document.getElementById("bookStatus");
+
+  // Cache bust: query param changes each load.
+  const BOOK_VERSION = Date.now();
+
+  async function loadOpeningBook(){
+    try{
+      const url = `./opening_book.json?v=${BOOK_VERSION}`;
+      const res = await fetch(url, { cache: "no-store" });
+      if(!res.ok) return {};
+      const j = await res.json();
+      return (j && typeof j === "object") ? j : {};
+    }catch(e){
+      return {};
+    }
   }
 
   /* =========================
@@ -378,16 +403,14 @@
     const pad = 50;
     const ox = pad, oy = pad;
 
-    // lines are 7 in both modes; we keep the same "board frame" look.
     const lines = cfg.lines;
-    const grid = (W - 2*pad) / (lines-1); // spacing between grid lines
+    const grid = (W - 2*pad) / (lines-1);
 
     return {W,H,pad,ox,oy,grid,lines};
   }
 
   function pointXY(cfg, r, c){
     const g = geom(cfg);
-    // points: r,c in 0..6 map to line intersections
     const x = g.ox + c*g.grid;
     const y = g.oy + r*g.grid;
     return {x,y};
@@ -395,7 +418,6 @@
 
   function cellXY(cfg, r, c){
     const g = geom(cfg);
-    // cells: r,c in 0..5 map to cell centers between lines
     const x = g.ox + (c+0.5)*g.grid;
     const y = g.oy + (r+0.5)*g.grid;
     return {x,y};
@@ -409,7 +431,6 @@
     const g = geom(cfg);
 
     if(cfg.type==="points"){
-      // snap to nearest intersection (0..6)
       const c = Math.round((x - g.ox)/g.grid);
       const r = Math.round((y - g.oy)/g.grid);
       if(!inside(cfg,r,c)) return null;
@@ -419,12 +440,10 @@
       if(dist > g.grid*0.38) return null;
       return {r,c};
     }else{
-      // cells: pick the cell containing the point (0..5)
       const cc = Math.floor((x - g.ox)/g.grid);
       const rr = Math.floor((y - g.oy)/g.grid);
       if(!inside(cfg,rr,cc)) return null;
 
-      // require reasonably inside the board area
       const minX = g.ox, maxX = g.ox + g.grid*(cfg.lines-1);
       const minY = g.oy, maxY = g.oy + g.grid*(cfg.lines-1);
       if(x < minX || x > maxX || y < minY || y > maxY) return null;
@@ -442,28 +461,23 @@
 
     ctx.clearRect(0,0,g.W,g.H);
 
-    // grid lines (always 7 lines -> 6x6 squares)
     ctx.lineWidth = 2;
     ctx.strokeStyle = "rgba(0,0,0,.35)";
     for(let i=0;i<g.lines;i++){
-      // horizontal
       ctx.beginPath();
       ctx.moveTo(g.ox, g.oy + i*g.grid);
       ctx.lineTo(g.ox + (g.lines-1)*g.grid, g.oy + i*g.grid);
       ctx.stroke();
 
-      // vertical
       ctx.beginPath();
       ctx.moveTo(g.ox + i*g.grid, g.oy);
       ctx.lineTo(g.ox + i*g.grid, g.oy + (g.lines-1)*g.grid);
       ctx.stroke();
     }
 
-    // coords
     ctx.fillStyle = "rgba(0,0,0,.45)";
     ctx.font = "14px system-ui";
 
-    // top letters: depend on playable size
     for(let c=0;c<cfg.size;c++){
       const a = String.fromCharCode(97+c);
       const x = (cfg.type==="points")
@@ -471,7 +485,6 @@
         : (g.ox + (c+0.5)*g.grid);
       ctx.fillText(a, x - 4, g.oy - 18);
     }
-    // left numbers
     for(let r=0;r<cfg.size;r++){
       const y = (cfg.type==="points")
         ? (g.oy + r*g.grid)
@@ -479,7 +492,6 @@
       ctx.fillText(String(1+r), g.ox - 22, y + 5);
     }
 
-    // safe moves overlay (human turn only)
     let safeSet = null;
     if(elShowSafe.checked && !game.over && isHumanTurn()){
       safeSet = computeSafeMoves(game.cfg, game.board, game.turn);
@@ -497,7 +509,6 @@
       }
     }
 
-    // stones
     for(let r=0;r<cfg.size;r++){
       for(let c=0;c<cfg.size;c++){
         const v = game.board[r][c];
@@ -528,7 +539,6 @@
       }
     }
 
-    // WIN LINE (solid only)
     if(game.over && game.winLine){
       const {from,to,col} = game.winLine;
       const p1 = rcToXY(cfg, from.r, from.c);
@@ -537,7 +547,6 @@
       const main = (col===BLACK) ? "rgba(58,160,255,.95)" : "rgba(255,82,82,.95)";
       ctx.lineCap = "round";
 
-      // shadow
       ctx.beginPath();
       ctx.moveTo(p1.x,p1.y);
       ctx.lineTo(p2.x,p2.y);
@@ -545,7 +554,6 @@
       ctx.strokeStyle = "rgba(0,0,0,.25)";
       ctx.stroke();
 
-      // main
       ctx.beginPath();
       ctx.moveTo(p1.x,p1.y);
       ctx.lineTo(p2.x,p2.y);
@@ -554,7 +562,6 @@
       ctx.stroke();
     }
 
-    // end overlay text
     if(game.over){
       ctx.fillStyle = "rgba(0,0,0,.25)";
       ctx.fillRect(0, g.H/2-34, g.W, 68);
@@ -638,7 +645,6 @@
     pushHistory();
     updateUI();
 
-    // flush paint before CPU starts thinking (removes input lag)
     if(game.mode==="cpu" && !game.over){
       await nextFrame();
       await sleep(0);
@@ -672,7 +678,7 @@
       history: [],
       humanCol,
       cpuCol,
-      pvMove: null // for PV priority
+      pvMove: null
     };
 
     elShowSafe.checked = false;
@@ -682,10 +688,7 @@
   }
 
   /* =========================
-     CPU AI (PV + TT + dynamic candidates + quiescence + root extensions)
-     - budgets: <=6 ply 3s, <=14 ply 7s, else 20s (strong)
-     - min tempo: 0.5s
-     - show "思考中…" if thinking >3s
+     CPU AI (existing)
   ========================= */
   function timeBudgetMs(){
     const stones = boardCount(game.board).stones;
@@ -695,7 +698,6 @@
     if(d==="easy") return 250;
     if(d==="medium") return 1500;
 
-    // strong
     if(ply <= 6) return 3000;
     if(ply <= 14) return 7000;
     return 20000;
@@ -716,7 +718,6 @@
     try{
       const move = await pickCpuMove(game.cfg, game.board, game.turn, budget, elDiff.value);
 
-      // minimum tempo: 0.5s
       const elapsed = nowMs() - cpuTurnStart;
       if(elapsed < 500) await sleep(500 - elapsed);
 
@@ -776,7 +777,6 @@
 
     let score = 0;
 
-    // center preference (works for odd/even size)
     const center = (cfg.size - 1) / 2;
     for(let r=0;r<cfg.size;r++){
       for(let c=0;c<cfg.size;c++){
@@ -840,7 +840,6 @@
           [m-1,m-1],[m+1,m+1],[m-1,m+1],[m+1,m-1]
         ].filter(([r,c])=>inside(cfg,r,c));
       }else{
-        // even size center 2x2
         const a = cfg.size/2 - 1;
         const b0 = cfg.size/2;
         return [
@@ -876,7 +875,6 @@
     const cand = candidateMoves(cfg,b, radius);
     const op = opp(col);
 
-    // detect opponent immediate wins (to prioritize blocks)
     const oppWinSet = new Set();
     for(const [r,c] of cand){
       const t = applyMove(cfg,b,r,c,op);
@@ -913,6 +911,7 @@
   // --- TT ---
   const TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2;
 
+  // Current key format (kept)
   function boardKey(cfg, b, turn){
     let s = (cfg.type==="cells" ? "C" : "P") + (turn===BLACK ? "B|" : "W|");
     for(let r=0;r<cfg.size;r++){
@@ -924,6 +923,71 @@
     return s;
   }
 
+  // Fallbacks: try multiple variants to match trainer-side boardKey
+  function boardKeyCandidates(cfg, b, turn){
+    const out = [];
+
+    // 1) current
+    out.push(boardKey(cfg,b,turn));
+
+    // 2) no type prefix
+    {
+      let s = (turn===BLACK ? "B|" : "W|");
+      for(let r=0;r<cfg.size;r++){
+        for(let c=0;c<cfg.size;c++) s += b[r][c];
+      }
+      out.push(s);
+    }
+
+    // 3) with comma-separated rows (more human-ish, sometimes used)
+    {
+      let s = (cfg.type==="cells" ? "C" : "P") + (turn===BLACK ? "B|" : "W|");
+      for(let r=0;r<cfg.size;r++){
+        s += b[r].join("");
+        if(r !== cfg.size-1) s += "/";
+      }
+      out.push(s);
+    }
+
+    // 4) pure digits only
+    {
+      let s = "";
+      for(let r=0;r<cfg.size;r++){
+        for(let c=0;c<cfg.size;c++) s += b[r][c];
+      }
+      out.push(s + "|" + (turn===BLACK?"B":"W"));
+      out.push((turn===BLACK?"B":"W") + "|" + s);
+    }
+
+    return out;
+  }
+
+  function pickFromOpeningBook(cfg, b, turnCol){
+    if(!openingBook) return null;
+    const keys = boardKeyCandidates(cfg, b, turnCol);
+
+    let entry = null;
+    for(const k of keys){
+      if(openingBook[k]){ entry = openingBook[k]; break; }
+    }
+    if(!entry) return null;
+
+    // entry: { "r,c": count, ... }
+    let best = null, bestCnt = -1;
+    for(const k of Object.keys(entry)){
+      const cnt = entry[k];
+      const [r,c] = k.split(",").map(Number);
+      if(!Number.isFinite(r) || !Number.isFinite(c)) continue;
+      if(!inside(cfg,r,c)) continue;
+      if(b[r][c] !== EMPTY) continue;
+      if(cnt > bestCnt){
+        bestCnt = cnt;
+        best = {r,c};
+      }
+    }
+    return best;
+  }
+
   function dynamicMaxCand(cfg, stones, depth, remainMs){
     if(stones <= 2) return 22;
     let base = (stones <= 10) ? 20 : 26;
@@ -931,7 +995,6 @@
     if(depth >= 9) base -= 4;
     if(remainMs < 900) base -= 6;
     if(remainMs < 450) base -= 4;
-    // slightly smaller for 6x6 (fewer moves)
     if(cfg.size === 6) base -= 2;
     return Math.max(10, Math.min(28, base));
   }
@@ -1103,7 +1166,6 @@
       let moves = orderMoves(cfg, rootBoard, me, maxCand);
       if(!moves.length) break;
 
-      // PV priority
       if(bestMove){
         const idx = moves.findIndex(m => m.r===bestMove.r && m.c===bestMove.c);
         if(idx > 0){
@@ -1146,6 +1208,15 @@
     const block = blockOpponentWinMove(cfg,b,col);
     if(block) return block;
 
+    // ★ 自己対戦の定跡（opening_book）
+    // まず定跡で即決できるなら即決（特にstrongは時間節約＆序盤強化）
+    const bookMove = pickFromOpeningBook(cfg, b, col);
+    if(bookMove){
+      if(difficulty === "strong") return bookMove;
+      if(difficulty === "medium") return bookMove;
+      // easyは定跡を使わなくても良い（好み）なので通過
+    }
+
     if(difficulty==="easy"){
       const moves = orderMoves(cfg,b,col,10);
       if(!moves.length) return null;
@@ -1156,8 +1227,6 @@
       return await iterativeDeepening(cfg,b,col, Math.min(budgetMs, 2000), 9);
     }
 
-    // strong
-    // depth cap a bit smaller for 6x6 (less needed)
     const cap = (cfg.size===6) ? 13 : 14;
     return await iterativeDeepening(cfg,b,col, budgetMs, cap);
   }
@@ -1196,9 +1265,18 @@
   });
 
   /* =========================
-     Init
+     Init (load book -> start)
   ========================= */
-  newGame();
+  (async () => {
+    openingBook = await loadOpeningBook();
+    const n = openingBook ? Object.keys(openingBook).length : 0;
+    if(n > 0){
+      elBookStatus.textContent = `読み込みOK（${n}局面）`;
+    }else{
+      elBookStatus.textContent = `未ロード（opening_book.json が無い/形式不一致の可能性）`;
+    }
+    newGame();
+  })();
 
 })();
 </script>
