@@ -1,5 +1,3 @@
-一応全文コードを渡します。
-
 <!doctype html>
 <html lang="ja">
 <head>
@@ -172,6 +170,13 @@
       <span class="tiny" id="collectedInfo" style="margin-left:auto;"></span>
     </div>
 
+    <!-- ✅ 追加：自己対戦（CPU vs CPU） -->
+    <div class="row" style="margin-top:10px;">
+      <button id="selfPlay10">自己対戦10局（強）</button>
+      <button id="selfPlay50">自己対戦50局（強）</button>
+      <span class="tiny" id="selfPlayInfo" style="margin-left:auto;"></span>
+    </div>
+
     <div class="status" style="margin-top:10px;">
       <div><strong id="turnText">黒番</strong> <span id="resultText" class="tiny"></span></div>
       <div class="tiny" id="countText">黒: 0 / 白: 0　手数: 0</div>
@@ -185,6 +190,9 @@
       </div>
       <div class="tiny">
         ※「この局をコピー」は終局後に押せます（Undo操作は棋譜に含めません）。
+      </div>
+      <div class="tiny">
+        ※「自己対戦」はUI操作をロックします（途中キャンセル不可）。終わると自動で棋譜が収集されます。
       </div>
     </div>
   </div>
@@ -346,8 +354,14 @@
   const btnClear = document.getElementById("clearCollected");
   const collectedInfo = document.getElementById("collectedInfo");
 
+  // ✅ 追加：自己対戦
+  const btnSelf10 = document.getElementById("selfPlay10");
+  const btnSelf50 = document.getElementById("selfPlay50");
+  const selfPlayInfo = document.getElementById("selfPlayInfo");
+
   let game = null;
   let isCpuThinking = false;
+  let isSelfPlaying = false;
 
   const colorName = c => (c===BLACK ? "黒" : "白");
   const currentTurnName = () => (game.turn===BLACK ? "黒番" : "白番");
@@ -393,6 +407,28 @@
   function updateCollectedInfo(){
     collectedInfo.textContent = `収集: ${collectedGames.length}局`;
   }
+  function updateSelfInfo(txt){
+    selfPlayInfo.textContent = txt || "";
+  }
+
+  function setUILocked(lock){
+    // 自己対戦中は操作をロック
+    const disabled = !!lock;
+    btnNew.disabled = disabled || isCpuThinking;
+    btnUndo.disabled = disabled || isCpuThinking || (game.history.length<=1);
+    btnCopyThis.disabled = disabled || !game.over || isCpuThinking;
+    btnCopyAll.disabled = disabled || isCpuThinking;
+    btnClear.disabled = disabled || isCpuThinking;
+
+    btnSelf10.disabled = disabled || isCpuThinking;
+    btnSelf50.disabled = disabled || isCpuThinking;
+
+    elBoardType.disabled = disabled || isCpuThinking;
+    elMode.disabled = disabled || isCpuThinking;
+    elHumanColor.disabled = disabled || isCpuThinking;
+    elDiff.disabled = disabled || isCpuThinking;
+    elShowSafe.disabled = disabled || isCpuThinking;
+  }
 
   function updateUI(){
     if(elMode.value === "cpu"){
@@ -414,11 +450,7 @@
     const {bc,wc,stones} = boardCount(game.board);
     countText.textContent = `黒: ${bc} / 白: ${wc}　手数: ${stones}`;
 
-    btnUndo.disabled = (game.history.length<=1) || isCpuThinking;
-    btnNew.disabled = isCpuThinking;
-
-    // ✅ 終局したら「この局をコピー」可能
-    btnCopyThis.disabled = !game.over || isCpuThinking;
+    setUILocked(isSelfPlaying);
 
     draw();
   }
@@ -647,34 +679,42 @@
     return `${col}${row}`;
   }
 
-  function makeKifuRecord(){
-    // Undoは「カウントしない」＝最終的に残った着手列のみを送る
-    // この実装では game.moves に「確定した着手」だけを積んでいる
-    const cfg = game.cfg;
+  function makeKifuRecordFrom(cfg, moves, winner, mode, difficulty, humanCol){
     const rule = (cfg.type==="points")
       ? "gomoku-othello exact-five (points 7x7)"
       : "gomoku-othello exact-five (cells 6x6)";
 
-    const mode = game.mode; // pvp/cpu
-    const difficulty = (mode==="cpu") ? elDiff.value : null;
-
-    const rec = {
+    return {
       v: 1,
       createdAt: new Date().toISOString(),
       size: cfg.size,
       boardType: cfg.type,
       rule,
       mode,
-      difficulty,
-      humanColor: (mode==="cpu") ? (game.humanCol===BLACK?"B":"W") : null,
-      winner: game.winner ? (game.winner===BLACK?"B":"W") : null,
-      moves: game.moves.map(m => ({
-        t: m.t, // "B"/"W"
+      difficulty: difficulty ?? null,
+      humanColor: (mode==="cpu" && humanCol) ? (humanCol===BLACK?"B":"W") : null,
+      winner: winner ? (winner===BLACK?"B":"W") : null,
+      moves: moves.map(m => ({
+        t: m.t,
         r: m.r, c: m.c,
         pos: rcToPos(cfg, m.r, m.c)
       }))
     };
-    return rec;
+  }
+
+  function makeKifuRecord(){
+    const cfg = game.cfg;
+    const mode = game.mode; // pvp/cpu
+    const difficulty = (mode==="cpu") ? elDiff.value : null;
+
+    return makeKifuRecordFrom(
+      cfg,
+      game.moves,
+      game.winner,
+      mode,
+      difficulty,
+      (mode==="cpu") ? game.humanCol : null
+    );
   }
 
   async function copyTextToClipboard(txt){
@@ -761,6 +801,7 @@
   async function playAt(r,c){
     if(game.over) return;
     if(isCpuThinking) return;
+    if(isSelfPlaying) return;
     if(game.mode==="cpu" && game.turn===game.cpuCol) return;
 
     const res = applyMove(game.cfg, game.board, r,c, game.turn);
@@ -788,12 +829,11 @@
 
   function undo(){
     if(isCpuThinking) return;
+    if(isSelfPlaying) return;
     if(game.history.length<=1) return;
 
     if(game.mode==="cpu"){
-      // undo both human+cpu as before
       popHistory(2);
-      // ✅ movesも2手戻す（足りない場合は0まで）
       game.moves.pop();
       game.moves.pop();
     }else{
@@ -801,9 +841,7 @@
       game.moves.pop();
     }
 
-    // いったん終局扱いだった場合も戻るので、局の収集フラグを外す
     game._collectedThisGame = false;
-
     updateUI();
   }
 
@@ -826,7 +864,7 @@
       humanCol,
       cpuCol,
       pvMove: null,
-      moves: [],               // ✅ 追加：この局の確定着手列
+      moves: [],
       _collectedThisGame: false
     };
 
@@ -838,9 +876,6 @@
 
   /* =========================
      CPU AI (PV + TT + dynamic candidates + quiescence + root extensions)
-     - budgets: <=6 ply 3s, <=14 ply 7s, else 20s (strong)
-     - min tempo: 0.5s
-     - show "思考中…" if thinking >3s
   ========================= */
   function timeBudgetMs(){
     const stones = boardCount(game.board).stones;
@@ -882,7 +917,6 @@
         const res = applyMove(game.cfg, game.board, move.r, move.c, game.turn);
         if(res){
           game.board = res.board;
-          // ✅ CPUの確定着手
           game.moves.push({ t: game.turn===BLACK ? "B" : "W", r: move.r, c: move.c });
         }
       }
@@ -1313,6 +1347,113 @@
   }
 
   /* =========================
+     ✅ Self-play (CPU vs CPU) helpers
+  ========================= */
+  function hardEndCheck(cfg, b){
+    const bl = findExactFiveLine(cfg, b, BLACK);
+    if(bl) return { over:true, winner:BLACK, winLine:bl };
+    const wl = findExactFiveLine(cfg, b, WHITE);
+    if(wl) return { over:true, winner:WHITE, winLine:wl };
+    if(legalMoves(cfg, b).length===0) return { over:true, winner:null, winLine:null };
+    return { over:false, winner:null, winLine:null };
+  }
+
+  async function simulateOneGameSelf(cfg, difficulty){
+    // UIは更新しない（速く回す）。必要なら最後に盤面だけ反映。
+    let b = makeBoard(cfg);
+    let turn = BLACK;
+    const moves = [];
+
+    // 120手上限（あなたの生成側と同じ想定）
+    for(let ply=0; ply<120; ply++){
+      const end = hardEndCheck(cfg, b);
+      if(end.over){
+        return { moves, winner:end.winner };
+      }
+
+      const budgetMs = (difficulty==="strong") ? 800 : 250; // 自己対戦は軽め
+      const mv = await pickCpuMove(cfg, b, turn, budgetMs, difficulty);
+      if(!mv) break;
+
+      const res = applyMove(cfg, b, mv.r, mv.c, turn);
+      if(!res) break;
+
+      moves.push({ t: (turn===BLACK?"B":"W"), r: mv.r, c: mv.c });
+      b = res.board;
+      turn = opp(turn);
+
+      // ブラウザ固まり防止
+      if(ply % 8 === 7) await sleep(0);
+    }
+
+    // 手数上限到達 or 何かで止まった場合
+    const end2 = hardEndCheck(cfg, b);
+    return { moves, winner:end2.over ? end2.winner : null };
+  }
+
+  function formatMovesShort(cfg, moves){
+    // "B:a1 W:d4 ..." 的な短い表示
+    return moves.map(m => `${m.t}:${rcToPos(cfg,m.r,m.c)}`).join(" ");
+  }
+
+  async function runSelfPlayGames(n, difficulty="strong"){
+    if(isSelfPlaying) return;
+    if(isCpuThinking) return;
+
+    isSelfPlaying = true;
+    showThinking(true);
+    updateSelfInfo(`自己対戦中… 0/${n}`);
+    setUILocked(true);
+
+    const cfg = getBoardConfig(); // 現在の盤タイプ設定で回す
+    const started = nowMs();
+
+    // 長引いた上位3局を保存
+    const topLong = []; // [{len, idx, moves, winner}]
+    const pushTop = (idx, moves, winner) => {
+      const rec = { len: moves.length, idx, moves: moves.slice(), winner };
+      topLong.push(rec);
+      topLong.sort((a,b)=> b.len - a.len);
+      if(topLong.length > 3) topLong.length = 3;
+    };
+
+    try{
+      for(let i=1; i<=n; i++){
+        const g = await simulateOneGameSelf(cfg, difficulty);
+        const rec = makeKifuRecordFrom(cfg, g.moves, g.winner, "selfplay", difficulty, null);
+        collectedGames.push(rec);
+
+        pushTop(i, g.moves, g.winner);
+
+        if(i % 1 === 0){
+          updateCollectedInfo();
+          updateSelfInfo(`自己対戦中… ${i}/${n}`);
+        }
+      }
+
+      // 終了ログ（長引いた上位3局の全手）
+      console.log("=== self-play done ===");
+      console.log({ games:n, difficulty, elapsedSec: ((nowMs()-started)/1000).toFixed(1) });
+      console.log("top 3 longest games:");
+      for(const t of topLong){
+        console.log(`- Game#${t.idx} plies=${t.len} winner=${t.winner===BLACK?"B":t.winner===WHITE?"W":"draw/none"}`);
+        console.log(formatMovesShort(cfg, t.moves));
+      }
+
+      showToast(`自己対戦 完了（${n}局）`);
+    } finally {
+      isSelfPlaying = false;
+      showThinking(false);
+      updateSelfInfo("");
+      setUILocked(false);
+      updateUI(); // 表示更新
+    }
+  }
+
+  btnSelf10.addEventListener("click", ()=> runSelfPlayGames(10, "strong"));
+  btnSelf50.addEventListener("click", ()=> runSelfPlayGames(50, "strong"));
+
+  /* =========================
      Events
   ========================= */
   btnNew.addEventListener("click", ()=> newGame());
@@ -1326,6 +1467,7 @@
   elShowSafe.addEventListener("change", ()=> draw());
 
   canvas.addEventListener("click", (ev)=>{
+    if(isSelfPlaying) return;
     const rect = canvas.getBoundingClientRect();
     const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
     const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
@@ -1335,6 +1477,7 @@
   });
 
   canvas.addEventListener("touchend", (ev)=>{
+    if(isSelfPlaying) return;
     const t = ev.changedTouches[0];
     if(!t) return;
     const rect = canvas.getBoundingClientRect();
