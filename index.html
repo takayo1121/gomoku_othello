@@ -41,14 +41,15 @@
   .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
   .row > *{ margin:4px 0; }
   label{ font-size:13px; color:var(--muted); }
-  select, button, input[type="checkbox"]{ font-size:14px; }
-  select, button{
+  select, button, input[type="checkbox"], input[type="number"]{ font-size:14px; }
+  select, button, input[type="number"]{
     background:#0f1726;
     color:var(--text);
     border:1px solid rgba(43,58,82,.8);
     border-radius:10px;
     padding:8px 10px;
   }
+  input[type="number"]{ width:90px; }
   button{ cursor:pointer; }
   button:hover{ border-color: rgba(74,163,255,.9); }
   button:disabled{ opacity:.45; cursor:not-allowed; }
@@ -103,6 +104,15 @@
     display:none;
     z-index:20;
   }
+
+  .devbox{
+    margin-top:10px;
+    padding:10px;
+    border-radius:12px;
+    border:1px dashed rgba(74,163,255,.35);
+    background:rgba(0,0,0,.12);
+    display:none;
+  }
 </style>
 </head>
 <body>
@@ -118,11 +128,14 @@
 
   <div class="card">
     <div class="row">
-      <label>盤タイプ</label>
-      <select id="boardType">
-        <option value="points">交点（7×7）</option>
-        <option value="cells">マス（6×6）</option>
-      </select>
+      <!-- 盤タイプ（通常は隠す：開発者モードで表示） -->
+      <span id="boardTypeWrap" style="display:none;">
+        <label>盤タイプ</label>
+        <select id="boardType">
+          <option value="points">交点（7×7）</option>
+          <option value="cells">マス（6×6）</option>
+        </select>
+      </span>
 
       <span style="margin-left:auto;"></span>
 
@@ -162,7 +175,7 @@
       </label>
     </div>
 
-    <!-- ✅ 追加：棋譜収集 -->
+    <!-- ✅ 棋譜収集（常に表示） -->
     <div class="row" style="margin-top:10px;">
       <button id="copyThisGame" disabled>この局をコピー</button>
       <button id="copyAllGames">まとめてコピー</button>
@@ -170,11 +183,27 @@
       <span class="tiny" id="collectedInfo" style="margin-left:auto;"></span>
     </div>
 
-    <!-- ✅ 追加：自己対戦（CPU vs CPU） -->
+    <!-- ✅ 開発者モード（デフォルトOFF / リロードで必ずOFF） -->
     <div class="row" style="margin-top:10px;">
-      <button id="selfPlay10">自己対戦10局（強）</button>
-      <button id="selfPlay50">自己対戦50局（強）</button>
-      <span class="tiny" id="selfPlayInfo" style="margin-left:auto;"></span>
+      <label style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="devMode" />
+        開発者モード
+      </label>
+      <span class="tiny" id="bookStatus" style="margin-left:auto;"></span>
+    </div>
+
+    <div class="devbox" id="devBox">
+      <div class="tiny" style="margin-bottom:8px;">
+        ※ 開発者用。自己対戦や6×6モード等を表示します。
+      </div>
+      <div class="row">
+        <button id="selfPlayBtn">自己対戦（CPU vs CPU）</button>
+        <label class="tiny">局数</label>
+        <input type="number" id="selfPlayN" min="1" max="9999" value="20">
+        <label class="tiny">表示ログ（長引いた上位）</label>
+        <input type="number" id="selfPlayTop" min="1" max="10" value="3">
+        <span class="tiny" id="selfPlayInfo" style="margin-left:auto;"></span>
+      </div>
     </div>
 
     <div class="status" style="margin-top:10px;">
@@ -191,15 +220,12 @@
       <div class="tiny">
         ※「この局をコピー」は終局後に押せます（Undo操作は棋譜に含めません）。
       </div>
-      <div class="tiny">
-        ※「自己対戦」はUI操作をロックします（途中キャンセル不可）。終わると自動で棋譜が収集されます。
-      </div>
     </div>
   </div>
 </div>
 
 <div class="overlay" id="thinking">
-  <div class="box">思考中…</div>
+  <div class="box" id="thinkingText">思考中…</div>
 </div>
 
 <div class="oktoast" id="toast"></div>
@@ -221,6 +247,7 @@
   const opp = c => (c===BLACK?WHITE:BLACK);
 
   function getBoardConfig(){
+    // 通常は 7x7 points 固定。開発者モードでのみ切替可。
     const t = elBoardType.value;
     if(t === "cells"){
       return { type:"cells", size:6, lines:7 }; // 6x6 cells, 7 grid lines
@@ -244,7 +271,7 @@
         else if(b[r][c]===WHITE) wc++;
       }
     }
-    return {bc,wc, stones: bc+wc};
+    return {bc,wc, stones: bc+wc, empties: (b.length*b.length)-(bc+wc)};
   }
 
   function flips(cfg, b, r, c, col){
@@ -319,6 +346,7 @@
   const ctx = canvas.getContext("2d");
 
   const elBoardType = document.getElementById("boardType");
+  const elBoardTypeWrap = document.getElementById("boardTypeWrap");
   const elMode = document.getElementById("mode");
   const elHumanColor = document.getElementById("humanColor");
   const elDiff = document.getElementById("difficulty");
@@ -334,8 +362,20 @@
   const countText = document.getElementById("countText");
   const ruleText = document.getElementById("ruleText");
 
+  const devMode = document.getElementById("devMode");
+  const devBox = document.getElementById("devBox");
+
+  const selfPlayBtn = document.getElementById("selfPlayBtn");
+  const selfPlayN = document.getElementById("selfPlayN");
+  const selfPlayTop = document.getElementById("selfPlayTop");
+  const selfPlayInfo = document.getElementById("selfPlayInfo");
+
   const thinkingOverlay = document.getElementById("thinking");
-  const showThinking = on => (thinkingOverlay.style.display = on ? "flex" : "none");
+  const thinkingText = document.getElementById("thinkingText");
+  const showThinking = (on, text="思考中…") => {
+    thinkingText.textContent = text;
+    thinkingOverlay.style.display = on ? "flex" : "none";
+  };
 
   const toast = document.getElementById("toast");
   let toastTimer = null;
@@ -346,22 +386,19 @@
     toastTimer = setTimeout(()=>{ toast.style.display="none"; }, 1600);
   }
 
-  // ✅ 追加：収集バッファ
-  // 1局=1レコード（JSON）を配列で保持、コピー時はJSONLとして出す
+  // ✅ 収集バッファ：1局=1レコード（JSON）を配列で保持、コピー時はJSONLとして出す
   const collectedGames = [];
   const btnCopyThis = document.getElementById("copyThisGame");
   const btnCopyAll = document.getElementById("copyAllGames");
   const btnClear = document.getElementById("clearCollected");
   const collectedInfo = document.getElementById("collectedInfo");
 
-  // ✅ 追加：自己対戦
-  const btnSelf10 = document.getElementById("selfPlay10");
-  const btnSelf50 = document.getElementById("selfPlay50");
-  const selfPlayInfo = document.getElementById("selfPlayInfo");
+  // ✅ book
+  const bookStatus = document.getElementById("bookStatus");
+  let openingBook = null;
 
   let game = null;
   let isCpuThinking = false;
-  let isSelfPlaying = false;
 
   const colorName = c => (c===BLACK ? "黒" : "白");
   const currentTurnName = () => (game.turn===BLACK ? "黒番" : "白番");
@@ -377,7 +414,8 @@
       turn: game.turn,
       over: game.over,
       winner: game.winner,
-      winLine: game.winLine ? JSON.parse(JSON.stringify(game.winLine)) : null
+      winLine: game.winLine ? JSON.parse(JSON.stringify(game.winLine)) : null,
+      movesLen: game.moves.length,
     });
   }
 
@@ -391,6 +429,7 @@
     game.over = last.over;
     game.winner = last.winner;
     game.winLine = last.winLine;
+    game.moves.length = last.movesLen;
   }
 
   function updateRuleText(){
@@ -407,27 +446,10 @@
   function updateCollectedInfo(){
     collectedInfo.textContent = `収集: ${collectedGames.length}局`;
   }
-  function updateSelfInfo(txt){
-    selfPlayInfo.textContent = txt || "";
-  }
 
-  function setUILocked(lock){
-    // 自己対戦中は操作をロック
-    const disabled = !!lock;
-    btnNew.disabled = disabled || isCpuThinking;
-    btnUndo.disabled = disabled || isCpuThinking || (game.history.length<=1);
-    btnCopyThis.disabled = disabled || !game.over || isCpuThinking;
-    btnCopyAll.disabled = disabled || isCpuThinking;
-    btnClear.disabled = disabled || isCpuThinking;
-
-    btnSelf10.disabled = disabled || isCpuThinking;
-    btnSelf50.disabled = disabled || isCpuThinking;
-
-    elBoardType.disabled = disabled || isCpuThinking;
-    elMode.disabled = disabled || isCpuThinking;
-    elHumanColor.disabled = disabled || isCpuThinking;
-    elDiff.disabled = disabled || isCpuThinking;
-    elShowSafe.disabled = disabled || isCpuThinking;
+  function updateDevUI(){
+    devBox.style.display = devMode.checked ? "block" : "none";
+    elBoardTypeWrap.style.display = devMode.checked ? "" : "none";
   }
 
   function updateUI(){
@@ -441,6 +463,7 @@
 
     updateRuleText();
     updateCollectedInfo();
+    updateDevUI();
 
     turnText.textContent = game.over ? "対局終了" : currentTurnName();
     resultText.textContent = game.over
@@ -450,7 +473,10 @@
     const {bc,wc,stones} = boardCount(game.board);
     countText.textContent = `黒: ${bc} / 白: ${wc}　手数: ${stones}`;
 
-    setUILocked(isSelfPlaying);
+    btnUndo.disabled = (game.history.length<=1) || isCpuThinking;
+    btnNew.disabled = isCpuThinking;
+
+    btnCopyThis.disabled = !game.over || isCpuThinking;
 
     draw();
   }
@@ -461,7 +487,7 @@
   function geom(cfg){
     const W = canvas.width;
     const H = canvas.height;
-    const pad = 50;
+    const pad = 62; // 座標が被りにくいよう外側へ
     const ox = pad, oy = pad;
     const lines = cfg.lines;
     const grid = (W - 2*pad) / (lines-1);
@@ -535,21 +561,21 @@
       ctx.stroke();
     }
 
-    // coords
-    ctx.fillStyle = "rgba(0,0,0,.45)";
+    // coords（外側へ）
+    ctx.fillStyle = "rgba(0,0,0,.50)";
     ctx.font = "14px system-ui";
     for(let c=0;c<cfg.size;c++){
       const a = String.fromCharCode(97+c);
       const x = (cfg.type==="points")
         ? (g.ox + c*g.grid)
         : (g.ox + (c+0.5)*g.grid);
-      ctx.fillText(a, x - 4, g.oy - 18);
+      ctx.fillText(a, x - 4, g.oy - 30);
     }
     for(let r=0;r<cfg.size;r++){
       const y = (cfg.type==="points")
         ? (g.oy + r*g.grid)
         : (g.oy + (r+0.5)*g.grid);
-      ctx.fillText(String(1+r), g.ox - 22, y + 5);
+      ctx.fillText(String(1+r), g.ox - 38, y + 5);
     }
 
     // safe moves overlay (human turn only)
@@ -638,7 +664,7 @@
   }
 
   /* =========================
-     Safe move display
+     Safe move display (1-ply safety)
   ========================= */
   function computeSafeMoves(cfg, b, turnCol){
     const moves = legalMoves(cfg, b);
@@ -673,52 +699,40 @@
      Kifu (collect & copy)
   ========================= */
   function rcToPos(cfg, r, c){
-    // a.. for columns, 1.. for rows (top=1)
     const col = String.fromCharCode(97 + c);
     const row = String(1 + r);
     return `${col}${row}`;
   }
 
-  function makeKifuRecordFrom(cfg, moves, winner, mode, difficulty, humanCol){
+  function makeKifuRecord(){
+    const cfg = game.cfg;
     const rule = (cfg.type==="points")
       ? "gomoku-othello exact-five (points 7x7)"
       : "gomoku-othello exact-five (cells 6x6)";
 
-    return {
+    const mode = game.mode; // pvp/cpu
+    const difficulty = (mode==="cpu") ? elDiff.value : null;
+
+    const rec = {
       v: 1,
       createdAt: new Date().toISOString(),
       size: cfg.size,
       boardType: cfg.type,
       rule,
       mode,
-      difficulty: difficulty ?? null,
-      humanColor: (mode==="cpu" && humanCol) ? (humanCol===BLACK?"B":"W") : null,
-      winner: winner ? (winner===BLACK?"B":"W") : null,
-      moves: moves.map(m => ({
-        t: m.t,
+      difficulty,
+      humanColor: (mode==="cpu") ? (game.humanCol===BLACK?"B":"W") : null,
+      winner: game.winner ? (game.winner===BLACK?"B":"W") : null,
+      moves: game.moves.map(m => ({
+        t: m.t, // "B"/"W"
         r: m.r, c: m.c,
         pos: rcToPos(cfg, m.r, m.c)
       }))
     };
-  }
-
-  function makeKifuRecord(){
-    const cfg = game.cfg;
-    const mode = game.mode; // pvp/cpu
-    const difficulty = (mode==="cpu") ? elDiff.value : null;
-
-    return makeKifuRecordFrom(
-      cfg,
-      game.moves,
-      game.winner,
-      mode,
-      difficulty,
-      (mode==="cpu") ? game.humanCol : null
-    );
+    return rec;
   }
 
   async function copyTextToClipboard(txt){
-    // iOS Safariなども考慮して fallback 付き
     try{
       await navigator.clipboard.writeText(txt);
       return true;
@@ -750,7 +764,6 @@
   });
 
   btnCopyAll.addEventListener("click", async ()=>{
-    // JSONL: 1行=1局(JSON)
     const txt = collectedGames.map(g => JSON.stringify(g)).join("\n") + (collectedGames.length? "\n" : "");
     const ok = await copyTextToClipboard(txt);
     showToast(ok ? `まとめてコピーしました（${collectedGames.length}局）` : "コピーに失敗しました");
@@ -784,7 +797,6 @@
   }
 
   function finalizeIfOver(){
-    // 終局したらこの局を収集バッファに追加（1局=新規ゲーム→終局）
     if(game.over && !game._collectedThisGame){
       const rec = makeKifuRecord();
       collectedGames.push(rec);
@@ -801,13 +813,11 @@
   async function playAt(r,c){
     if(game.over) return;
     if(isCpuThinking) return;
-    if(isSelfPlaying) return;
     if(game.mode==="cpu" && game.turn===game.cpuCol) return;
 
     const res = applyMove(game.cfg, game.board, r,c, game.turn);
     if(!res) return;
 
-    // ✅ 確定着手として記録（Undoは別で扱う）
     game.moves.push({ t: game.turn===BLACK ? "B" : "W", r, c });
 
     game.board = res.board;
@@ -819,7 +829,6 @@
 
     finalizeIfOver();
 
-    // flush paint before CPU starts thinking (removes input lag)
     if(game.mode==="cpu" && !game.over){
       await nextFrame();
       await sleep(0);
@@ -829,16 +838,12 @@
 
   function undo(){
     if(isCpuThinking) return;
-    if(isSelfPlaying) return;
     if(game.history.length<=1) return;
 
     if(game.mode==="cpu"){
       popHistory(2);
-      game.moves.pop();
-      game.moves.pop();
     }else{
       popHistory(1);
-      game.moves.pop();
     }
 
     game._collectedThisGame = false;
@@ -863,7 +868,6 @@
       history: [],
       humanCol,
       cpuCol,
-      pvMove: null,
       moves: [],
       _collectedThisGame: false
     };
@@ -875,10 +879,37 @@
   }
 
   /* =========================
-     CPU AI (PV + TT + dynamic candidates + quiescence + root extensions)
+     Opening Book loader
+     - 同じ階層に opening_book.json を置くと自動で読みます
   ========================= */
+  async function tryLoadOpeningBook(){
+    bookStatus.textContent = "book: 読み込み中…";
+    try{
+      const res = await fetch("./opening_book.json", { cache:"no-store" });
+      if(!res.ok) throw new Error("not found");
+      const j = await res.json();
+      openingBook = (j && typeof j === "object") ? j : null;
+      if(openingBook){
+        const n = Object.keys(openingBook).length;
+        bookStatus.textContent = `book: ON（${n} states）`;
+      }else{
+        bookStatus.textContent = "book: OFF";
+      }
+    }catch(_e){
+      openingBook = null;
+      bookStatus.textContent = "book: OFF（opening_book.json なし）";
+    }
+  }
+
+  /* =========================
+     CPU AI
+     - 時間固定（反復深化）
+     - 危険手：相手が最善を尽くしたときに “負けが避けられない” 場合だけ
+       （ミニマックス的・現実的）
+  ========================= */
+
   function timeBudgetMs(){
-    const stones = boardCount(game.board).stones;
+    const {stones, empties} = boardCount(game.board);
     const ply = stones + 1;
     const d = elDiff.value;
 
@@ -887,51 +918,9 @@
 
     if(ply <= 6) return 3000;
     if(ply <= 14) return 7000;
+
+    if(empties <= 10) return 25000;
     return 20000;
-  }
-
-  async function maybeCpuMove(){
-    if(game.mode!=="cpu") return;
-    if(game.over) return;
-    if(game.turn !== game.cpuCol) return;
-
-    isCpuThinking = true;
-    updateUI();
-
-    const budget = timeBudgetMs();
-    const cpuTurnStart = nowMs();
-    const thinkLabelTimer = setTimeout(()=>{ showThinking(true); }, 3000);
-
-    try{
-      const move = await pickCpuMove(game.cfg, game.board, game.turn, budget, elDiff.value);
-
-      const elapsed = nowMs() - cpuTurnStart;
-      if(elapsed < 500) await sleep(500 - elapsed);
-
-      clearTimeout(thinkLabelTimer);
-      showThinking(false);
-
-      if(game.over) return;
-
-      if(move){
-        const res = applyMove(game.cfg, game.board, move.r, move.c, game.turn);
-        if(res){
-          game.board = res.board;
-          game.moves.push({ t: game.turn===BLACK ? "B" : "W", r: move.r, c: move.c });
-        }
-      }
-      game.turn = opp(game.turn);
-
-      maybeEndAfterMove();
-      pushHistory();
-
-      finalizeIfOver();
-    } finally {
-      clearTimeout(thinkLabelTimer);
-      showThinking(false);
-      isCpuThinking = false;
-      updateUI();
-    }
   }
 
   function immediateWinMove(cfg, b, col){
@@ -962,6 +951,17 @@
     return cnt;
   }
 
+  function terminalScore(cfg, b, me){
+    const op = opp(me);
+    if(hasExactFive(cfg,b,me)) return 1e15;
+    if(hasExactFive(cfg,b,op)) return -1e15;
+    if(legalMoves(cfg,b).length===0) return 0;
+    return null;
+  }
+
+  /* ============================================================
+     ★ 評価関数（貼り替えやすい場所）
+  ============================================================ */
   function evalPos(cfg, b, me){
     const op = opp(me);
     if(hasExactFive(cfg,b,me)) return 1e15;
@@ -969,14 +969,20 @@
 
     let score = 0;
 
-    const center = (cfg.size - 1) / 2;
-    for(let r=0;r<cfg.size;r++){
-      for(let c=0;c<cfg.size;c++){
+    const edgeW = 70;
+    const cornerW = 180;
+    const n = cfg.size;
+    for(let r=0;r<n;r++){
+      for(let c=0;c<n;c++){
         const v=b[r][c];
         if(v===EMPTY) continue;
-        const cd = Math.abs(r-center)+Math.abs(c-center);
-        const w = 6 - cd;
-        score += (v===me ? +w : -w);
+        const isCorner = ( (r===0||r===n-1) && (c===0||c===n-1) );
+        const isEdge = (r===0||r===n-1||c===0||c===n-1);
+        if(isCorner){
+          score += (v===me ? +cornerW : -cornerW);
+        }else if(isEdge){
+          score += (v===me ? +edgeW : -edgeW);
+        }
       }
     }
 
@@ -993,17 +999,17 @@
     }
 
     function add(col, sign){
-      for(let r=0;r<cfg.size;r++){
-        for(let c=0;c<cfg.size;c++){
+      for(let r=0;r<n;r++){
+        for(let c=0;c<n;c++){
           if(b[r][c]!==col) continue;
           for(const [dr,dc] of checkDirs){
             const f = lineFeature(r,c,col,dr,dc);
             if(f.len>=4){
-              score += sign * (f.open===2 ? 700000 : f.open===1 ? 160000 : 24000);
+              score += sign * (f.open===2 ? 720000 : f.open===1 ? 170000 : 26000);
             }else if(f.len===3){
-              score += sign * (f.open===2 ? 28000 : f.open===1 ? 7600 : 700);
+              score += sign * (f.open===2 ? 32000 : f.open===1 ? 8800 : 800);
             }else if(f.len===2){
-              score += sign * (f.open===2 ? 950 : f.open===1 ? 240 : 28);
+              score += sign * (f.open===2 ? 1100 : f.open===1 ? 280 : 35);
             }
           }
         }
@@ -1013,20 +1019,20 @@
 
     const myWin = countImmediateExactWins(cfg,b,me);
     const opWin = countImmediateExactWins(cfg,b,op);
-    if(myWin>=2) score += 5e8;
-    else if(myWin===1) score += 8e6;
-    if(opWin>=2) score -= 6e8;
-    else if(opWin===1) score -= 1.2e7;
+    if(myWin>=2) score += 6e8;
+    else if(myWin===1) score += 1.0e7;
+    if(opWin>=2) score -= 7e8;
+    else if(opWin===1) score -= 1.4e7;
 
     return score;
   }
+  /* ===== 評価関数ここまで ===== */
 
   function candidateMoves(cfg, b, radius){
     const {stones} = boardCount(b);
     if(stones===0){
       if(cfg.size % 2 === 1){
-        const mid = (cfg.size-1)/2;
-        const m = mid|0;
+        const m = ((cfg.size-1)/2)|0;
         return [
           [m,m],[m,m-1],[m-1,m],[m,m+1],[m+1,m],
           [m-1,m-1],[m+1,m+1],[m-1,m+1],[m+1,m-1]
@@ -1061,8 +1067,35 @@
     return out;
   }
 
+  function boardKey(cfg, b, turn){
+    let s = (cfg.type==="cells" ? "C" : "P") + (turn===BLACK ? "B|" : "W|");
+    for(let r=0;r<cfg.size;r++){
+      const row = b[r];
+      for(let c=0;c<cfg.size;c++){
+        s += row[c];
+      }
+    }
+    return s;
+  }
+
+  function bookTopMoves(cfg, b, turn, topK){
+    if(!openingBook) return [];
+    const key = boardKey(cfg,b,turn);
+    const entry = openingBook[key];
+    if(!entry) return [];
+    return Object.entries(entry)
+      .filter(([,w]) => typeof w === "number" && w > 0)
+      .sort((a,b) => b[1]-a[1])
+      .slice(0, topK)
+      .map(([k]) => {
+        const [r,c] = k.split(",").map(Number);
+        return {r,c, w: entry[k]};
+      })
+      .filter(m => inside(cfg,m.r,m.c));
+  }
+
   function orderMoves(cfg, b, col, maxCand){
-    const {stones} = boardCount(b);
+    const {stones, empties} = boardCount(b);
     const radius = stones<=10 ? 3 : 4;
     const cand = candidateMoves(cfg,b, radius);
     const op = opp(col);
@@ -1072,6 +1105,11 @@
       const t = applyMove(cfg,b,r,c,op);
       if(t && hasExactFive(cfg,t.board,op)) oppWinSet.add(r*100+c);
     }
+
+    const bookK = (stones <= 10) ? 5 : 2;
+    const book = bookTopMoves(cfg, b, col, bookK);
+    const bookMap = new Map();
+    for(const m of book) bookMap.set(m.r*100+m.c, m.w);
 
     const scored = [];
     for(const [r,c] of cand){
@@ -1085,130 +1123,91 @@
       const forkBonus = forks>=2 ? 1 : forks===1 ? 0.2 : 0;
 
       const rough = evalPos(cfg,t.board,col);
-      const pri = winNow*1e18 + blocks*8e17 + forkBonus*4e16 + rough;
+
+      const bw = bookMap.get(r*100+c) || 0;
+      const bookBonus = bw ? ( (stones<=12 ? 2.5e6 : 8e5) * Math.log(1+bw) ) : 0;
+
+      const endgameBoost = (empties <= 12) ? 1.25 : 1.0;
+
+      const pri = winNow*1e18 + blocks*8e17 + forkBonus*4e16 + (rough*endgameBoost) + bookBonus;
       scored.push({r,c,pri});
     }
     scored.sort((a,b)=> b.pri - a.pri);
     return scored.slice(0, maxCand).map(x=>({r:x.r,c:x.c}));
   }
 
-  function terminalScore(cfg, b, me){
+  /* --------------------------------------------
+     危険手フィルタ（ミニマックス的・現実的）
+     「相手が最善を尽くすと、こちらがどう指しても負けが避けられない」
+     ＝相手のある応手が “こちらの最善防御を潰して” 勝ちを強制するなら危険
+     ※ ここでは “2手先（相手の次の次）での確定勝ち” を検出
+  -------------------------------------------- */
+  function isForcedLossIn2(cfg, afterMyMoveBoard, me){
     const op = opp(me);
-    if(hasExactFive(cfg,b,me)) return 1e15;
-    if(hasExactFive(cfg,b,op)) return -1e15;
-    if(legalMoves(cfg,b).length===0) return 0;
-    return null;
-  }
 
-  const TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2;
+    if(hasExactFive(cfg, afterMyMoveBoard, op)) return true;
 
-  function boardKey(cfg, b, turn){
-    let s = (cfg.type==="cells" ? "C" : "P") + (turn===BLACK ? "B|" : "W|");
-    for(let r=0;r<cfg.size;r++){
-      const row = b[r];
-      for(let c=0;c<cfg.size;c++){
-        s += row[c];
+    const opMoves = legalMoves(cfg, afterMyMoveBoard);
+    for(const [or,oc] of opMoves){
+      const tOp = applyMove(cfg, afterMyMoveBoard, or, oc, op);
+      if(!tOp) continue;
+
+      if(hasExactFive(cfg, tOp.board, op)) return true;
+
+      const myReplies = legalMoves(cfg, tOp.board);
+      let existsDefense = false;
+
+      for(const [mr,mc] of myReplies){
+        const tMe = applyMove(cfg, tOp.board, mr, mc, me);
+        if(!tMe) continue;
+
+        if(hasExactFive(cfg, tMe.board, me)){
+          existsDefense = true;
+          break;
+        }
+
+        const opNextWin = immediateWinMove(cfg, tMe.board, op);
+        if(!opNextWin){
+          existsDefense = true;
+          break;
+        }
       }
+
+      if(!existsDefense) return true;
     }
-    return s;
+
+    return false;
   }
 
-  function dynamicMaxCand(cfg, stones, depth, remainMs){
-    if(stones <= 2) return 22;
+  function depthCapFor(cfg, b, difficulty){
+    const {stones, empties} = boardCount(b);
+    if(difficulty==="easy") return 4;
+    if(difficulty==="medium") return 9;
+
+    let cap = (cfg.size===6) ? 13 : 14;
+
+    if(empties <= 12) cap += 2;
+    if(empties <= 8) cap += 2;
+    if(stones <= 4) cap -= 1;
+
+    return cap;
+  }
+
+  function maxCandFor(cfg, b, depth, remainMs){
+    const {stones, empties} = boardCount(b);
+
     let base = (stones <= 10) ? 20 : 26;
+
+    if(empties <= 12) base += 2;
+    if(empties <= 8) base += 2;
+
     if(depth >= 7) base -= 6;
     if(depth >= 9) base -= 4;
     if(remainMs < 900) base -= 6;
     if(remainMs < 450) base -= 4;
     if(cfg.size === 6) base -= 2;
-    return Math.max(10, Math.min(28, base));
-  }
 
-  function shouldQuiesce(cfg, b, me){
-    const op = opp(me);
-    if(countImmediateExactWins(cfg,b,me) >= 1) return true;
-    if(countImmediateExactWins(cfg,b,op) >= 1) return true;
-    return false;
-  }
-
-  function forcingMoves(cfg, b, turn){
-    const win = immediateWinMove(cfg,b,turn);
-    if(win) return [win];
-
-    const op = opp(turn);
-    const out = [];
-    const moves = legalMoves(cfg,b);
-    for(const [r,c] of moves){
-      const tOpp = applyMove(cfg,b,r,c,op);
-      if(tOpp && hasExactFive(cfg,tOpp.board,op)){
-        out.push({r,c});
-      }
-    }
-    if(out.length){
-      const seen = new Set();
-      const uniq = [];
-      for(const m of out){
-        const k = m.r*100+m.c;
-        if(!seen.has(k)){ seen.add(k); uniq.push(m); }
-      }
-      return uniq;
-    }
-
-    const cand = orderMoves(cfg,b,turn, 18);
-    const forks = [];
-    for(const m of cand){
-      const t = applyMove(cfg,b,m.r,m.c,turn);
-      if(!t) continue;
-      if(countImmediateExactWins(cfg,t.board,turn) >= 2){
-        forks.push(m);
-        if(forks.length>=6) break;
-      }
-    }
-    return forks;
-  }
-
-  async function quiescence(cfg, b, qDepth, alpha, beta, me, turn, deadline, tt){
-    if(nowMs() > deadline) return evalPos(cfg,b,me);
-
-    const term = terminalScore(cfg,b,me);
-    if(term !== null) return term;
-
-    const stand = evalPos(cfg,b,me);
-    if(qDepth <= 0) return stand;
-
-    if(!shouldQuiesce(cfg,b,me)) return stand;
-
-    if(turn === me){
-      if(stand > alpha) alpha = stand;
-      if(alpha >= beta) return alpha;
-    }else{
-      if(stand < beta) beta = stand;
-      if(alpha >= beta) return beta;
-    }
-
-    const moves = forcingMoves(cfg,b,turn);
-    if(!moves.length) return stand;
-
-    const maximizing = (turn===me);
-    let best = maximizing ? -Infinity : Infinity;
-
-    for(const m of moves){
-      if(nowMs() > deadline) break;
-      const t = applyMove(cfg,b,m.r,m.c,turn);
-      if(!t) continue;
-
-      const val = await quiescence(cfg, t.board, qDepth-1, alpha, beta, me, opp(turn), deadline, tt);
-
-      if(maximizing){
-        if(val > best) best = val;
-        if(best > alpha) alpha = best;
-      }else{
-        if(val < best) best = val;
-        if(best < beta) beta = best;
-      }
-      if(beta <= alpha) break;
-    }
-    return (best===Infinity || best===-Infinity) ? stand : best;
+    return Math.max(10, Math.min(30, base));
   }
 
   async function alphabeta(cfg, b, depth, alpha, beta, me, turn, deadline, tt){
@@ -1219,6 +1218,7 @@
 
     const key = boardKey(cfg,b,turn);
     const hit = tt.get(key);
+    const TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2;
     if(hit && hit.depth >= depth){
       if(hit.flag === TT_EXACT) return hit.val;
       if(hit.flag === TT_LOWER) alpha = Math.max(alpha, hit.val);
@@ -1227,7 +1227,7 @@
     }
 
     if(depth === 0){
-      const val = await quiescence(cfg, b, 2, alpha, beta, me, turn, deadline, tt);
+      const val = evalPos(cfg,b,me);
       tt.set(key, {depth, val, flag: TT_EXACT});
       return val;
     }
@@ -1235,9 +1235,8 @@
     const maximizing = (turn===me);
     let best = maximizing ? -Infinity : Infinity;
 
-    const {stones} = boardCount(b);
     const remain = Math.max(0, deadline - nowMs());
-    const maxCand = dynamicMaxCand(cfg, stones, depth, remain);
+    const maxCand = maxCandFor(cfg, b, depth, remain);
     const moves = orderMoves(cfg, b, turn, maxCand);
     if(!moves.length){
       const val = evalPos(cfg,b,me);
@@ -1268,27 +1267,42 @@
     if(best <= a0) flag = TT_UPPER;
     else if(best >= b0) flag = TT_LOWER;
 
-    if(tt.size > 60000) tt.clear();
+    if(tt.size > 70000) tt.clear();
     tt.set(key, {depth, val: best, flag});
     return best;
   }
 
-  async function iterativeDeepening(cfg, rootBoard, me, budgetMs, depthCap){
+  async function iterativeDeepening(cfg, rootBoard, me, budgetMs, difficulty){
     const deadline = nowMs() + budgetMs;
-
     const tt = new Map();
-    let bestMove = null;
 
-    const {stones} = boardCount(rootBoard);
-    const rootTopK = stones <= 10 ? 6 : 4;
+    const depthCap = depthCapFor(cfg, rootBoard, difficulty);
+    let bestMove = null;
 
     for(let depth=3; depth<=depthCap; depth++){
       if(nowMs() > deadline) break;
 
       const remain = Math.max(0, deadline - nowMs());
-      const maxCand = dynamicMaxCand(cfg, stones, depth, remain);
+      const maxCand = maxCandFor(cfg, rootBoard, depth, remain);
+
       let moves = orderMoves(cfg, rootBoard, me, maxCand);
       if(!moves.length) break;
+
+      // 危険手フィルタ：
+      // 「相手が最善を尽くしたとき負けが避けられない」(2手先確定負け) のみ除外
+      // ただし “全部危険” なら除外しない（合法手消滅を防ぐ）
+      const {empties} = boardCount(rootBoard);
+      const applyDangerFilter = (difficulty!=="easy") && (empties > 8);
+      if(applyDangerFilter){
+        const filtered = [];
+        for(const m of moves){
+          const t = applyMove(cfg, rootBoard, m.r, m.c, me);
+          if(!t) continue;
+          const danger = isForcedLossIn2(cfg, t.board, me);
+          if(!danger) filtered.push(m);
+        }
+        if(filtered.length) moves = filtered;
+      }
 
       if(bestMove){
         const idx = moves.findIndex(m => m.r===bestMove.r && m.c===bestMove.c);
@@ -1308,10 +1322,7 @@
         const t = applyMove(cfg, rootBoard, m.r, m.c, me);
         if(!t) continue;
 
-        const extra = (i < rootTopK) ? 1 : 0;
-        const searchDepth = Math.max(0, depth - 1 + extra);
-
-        const val = await alphabeta(cfg, t.board, searchDepth, -Infinity, Infinity, me, opp(me), deadline, tt);
+        const val = await alphabeta(cfg, t.board, depth-1, -Infinity, Infinity, me, opp(me), deadline, tt);
 
         if(val > localBestVal){
           localBestVal = val;
@@ -1323,6 +1334,7 @@
 
       bestMove = localBest;
     }
+
     return bestMove;
   }
 
@@ -1333,125 +1345,152 @@
     if(block) return block;
 
     if(difficulty==="easy"){
-      const moves = orderMoves(cfg,b,col,10);
+      const moves = orderMoves(cfg,b,col,12);
       if(!moves.length) return null;
-      return moves[Math.floor(Math.random()*Math.min(3,moves.length))];
+      return moves[0]; // ブレ不要
     }
 
-    if(difficulty==="medium"){
-      return await iterativeDeepening(cfg,b,col, Math.min(budgetMs, 2000), 9);
-    }
+    return await iterativeDeepening(cfg, b, col, budgetMs, difficulty);
+  }
 
-    const cap = (cfg.size===6) ? 13 : 14;
-    return await iterativeDeepening(cfg,b,col, budgetMs, cap);
+  async function maybeCpuMove(){
+    if(game.mode!=="cpu") return;
+    if(game.over) return;
+    if(game.turn !== game.cpuCol) return;
+
+    isCpuThinking = true;
+    updateUI();
+
+    const budget = timeBudgetMs();
+    const cpuTurnStart = nowMs();
+    const thinkLabelTimer = setTimeout(()=>{ showThinking(true, "思考中…"); }, 3000);
+
+    try{
+      const move = await pickCpuMove(game.cfg, game.board, game.turn, budget, elDiff.value);
+
+      const elapsed = nowMs() - cpuTurnStart;
+      if(elapsed < 300) await sleep(300 - elapsed);
+
+      clearTimeout(thinkLabelTimer);
+      showThinking(false);
+
+      if(game.over) return;
+
+      if(move){
+        const res = applyMove(game.cfg, game.board, move.r, move.c, game.turn);
+        if(res){
+          game.board = res.board;
+          game.moves.push({ t: game.turn===BLACK ? "B" : "W", r: move.r, c: move.c });
+        }
+      }
+      game.turn = opp(game.turn);
+
+      maybeEndAfterMove();
+      pushHistory();
+
+      finalizeIfOver();
+    } finally {
+      clearTimeout(thinkLabelTimer);
+      showThinking(false);
+      isCpuThinking = false;
+      updateUI();
+    }
   }
 
   /* =========================
-     ✅ Self-play (CPU vs CPU) helpers
+     Self-play (dev only)
   ========================= */
-  function hardEndCheck(cfg, b){
-    const bl = findExactFiveLine(cfg, b, BLACK);
-    if(bl) return { over:true, winner:BLACK, winLine:bl };
-    const wl = findExactFiveLine(cfg, b, WHITE);
-    if(wl) return { over:true, winner:WHITE, winLine:wl };
-    if(legalMoves(cfg, b).length===0) return { over:true, winner:null, winLine:null };
-    return { over:false, winner:null, winLine:null };
-  }
-
-  async function simulateOneGameSelf(cfg, difficulty){
-    // UIは更新しない（速く回す）。必要なら最後に盤面だけ反映。
-    let b = makeBoard(cfg);
-    let turn = BLACK;
-    const moves = [];
-
-    // 120手上限（あなたの生成側と同じ想定）
-    for(let ply=0; ply<120; ply++){
-      const end = hardEndCheck(cfg, b);
-      if(end.over){
-        return { moves, winner:end.winner };
-      }
-
-      const budgetMs = (difficulty==="strong") ? 800 : 250; // 自己対戦は軽め
-      const mv = await pickCpuMove(cfg, b, turn, budgetMs, difficulty);
-      if(!mv) break;
-
-      const res = applyMove(cfg, b, mv.r, mv.c, turn);
-      if(!res) break;
-
-      moves.push({ t: (turn===BLACK?"B":"W"), r: mv.r, c: mv.c });
-      b = res.board;
-      turn = opp(turn);
-
-      // ブラウザ固まり防止
-      if(ply % 8 === 7) await sleep(0);
-    }
-
-    // 手数上限到達 or 何かで止まった場合
-    const end2 = hardEndCheck(cfg, b);
-    return { moves, winner:end2.over ? end2.winner : null };
-  }
-
-  function formatMovesShort(cfg, moves){
-    // "B:a1 W:d4 ..." 的な短い表示
-    return moves.map(m => `${m.t}:${rcToPos(cfg,m.r,m.c)}`).join(" ");
-  }
-
-  async function runSelfPlayGames(n, difficulty="strong"){
-    if(isSelfPlaying) return;
+  async function runSelfPlay(){
+    if(!devMode.checked) return;
     if(isCpuThinking) return;
 
-    isSelfPlaying = true;
-    showThinking(true);
-    updateSelfInfo(`自己対戦中… 0/${n}`);
-    setUILocked(true);
+    const N = Math.max(1, Math.min(99999, Number(selfPlayN.value||20)));
+    const topK = Math.max(1, Math.min(10, Number(selfPlayTop.value||3)));
 
-    const cfg = getBoardConfig(); // 現在の盤タイプ設定で回す
-    const started = nowMs();
+    selfPlayBtn.disabled = true;
+    btnNew.disabled = true;
+    btnUndo.disabled = true;
 
-    // 長引いた上位3局を保存
-    const topLong = []; // [{len, idx, moves, winner}]
-    const pushTop = (idx, moves, winner) => {
-      const rec = { len: moves.length, idx, moves: moves.slice(), winner };
-      topLong.push(rec);
-      topLong.sort((a,b)=> b.len - a.len);
-      if(topLong.length > 3) topLong.length = 3;
-    };
+    let bWins=0, wWins=0, draws=0;
+    const longGames = [];
+
+    showThinking(true, `自己対戦中… 0/${N}`);
 
     try{
-      for(let i=1; i<=n; i++){
-        const g = await simulateOneGameSelf(cfg, difficulty);
-        const rec = makeKifuRecordFrom(cfg, g.moves, g.winner, "selfplay", difficulty, null);
-        collectedGames.push(rec);
+      for(let i=1;i<=N;i++){
+        const cfg = getBoardConfig();
+        const board = makeBoard(cfg);
+        let turn = BLACK;
+        let winner=null;
+        const moves = [];
 
-        pushTop(i, g.moves, g.winner);
+        for(let ply=0; ply<200; ply++){
+          const budget = (elDiff.value==="strong") ? 120 : (elDiff.value==="medium" ? 80 : 30);
+          const mv = await pickCpuMove(cfg, board, turn, budget, elDiff.value);
+          if(!mv) break;
+          const res = applyMove(cfg, board, mv.r, mv.c, turn);
+          if(!res) break;
 
-        if(i % 1 === 0){
-          updateCollectedInfo();
-          updateSelfInfo(`自己対戦中… ${i}/${n}`);
+          for(let r=0;r<cfg.size;r++) board[r]=res.board[r].slice();
+          moves.push({ t: turn===BLACK?"B":"W", r: mv.r, c: mv.c });
+
+          const bl = findExactFiveLine(cfg, board, BLACK);
+          const wl = findExactFiveLine(cfg, board, WHITE);
+          if(bl){ winner=BLACK; break; }
+          if(wl){ winner=WHITE; break; }
+          if(legalMoves(cfg, board).length===0){ winner=null; break; }
+
+          turn = opp(turn);
+          if(ply % 8 === 0) await sleep(0);
         }
+
+        if(winner===BLACK) bWins++;
+        else if(winner===WHITE) wWins++;
+        else draws++;
+
+        const rec = {
+          v: 1,
+          createdAt: new Date().toISOString(),
+          size: cfg.size,
+          boardType: cfg.type,
+          rule: (cfg.type==="points") ? "gomoku-othello exact-five (points 7x7)" : "gomoku-othello exact-five (cells 6x6)",
+          mode: "selfplay",
+          difficulty: elDiff.value,
+          humanColor: null,
+          winner: winner ? (winner===BLACK?"B":"W") : null,
+          moves: moves.map(m => ({...m, pos: rcToPos(cfg,m.r,m.c)}))
+        };
+        collectedGames.push(rec);
+        updateCollectedInfo();
+
+        longGames.push({len: moves.length, rec});
+        longGames.sort((a,b)=> b.len-a.len);
+        if(longGames.length > topK) longGames.length = topK;
+
+        selfPlayInfo.textContent = `進捗 ${i}/${N} | B:${bWins} W:${wWins} D:${draws}`;
+        showThinking(true, `自己対戦中… ${i}/${N}`);
+        await sleep(0);
       }
 
-      // 終了ログ（長引いた上位3局の全手）
-      console.log("=== self-play done ===");
-      console.log({ games:n, difficulty, elapsedSec: ((nowMs()-started)/1000).toFixed(1) });
-      console.log("top 3 longest games:");
-      for(const t of topLong){
-        console.log(`- Game#${t.idx} plies=${t.len} winner=${t.winner===BLACK?"B":t.winner===WHITE?"W":"draw/none"}`);
-        console.log(formatMovesShort(cfg, t.moves));
+      const lines = [];
+      lines.push(`[selfplay done] N=${N} | B=${bWins} W=${wWins} D=${draws}`);
+      lines.push(`[top ${longGames.length} longest games]`);
+      for(let i=0;i<longGames.length;i++){
+        const g = longGames[i];
+        lines.push(`- #${i+1} len=${g.len} winner=${g.rec.winner ?? "D"}`);
+        lines.push(`  moves: ${g.rec.moves.map(m=>m.pos).join(" ")}`);
       }
+      console.log(lines.join("\n"));
+      showToast(`自己対戦完了（収集に ${N}局追加）※長引いた上位はconsoleに出力`);
 
-      showToast(`自己対戦 完了（${n}局）`);
     } finally {
-      isSelfPlaying = false;
       showThinking(false);
-      updateSelfInfo("");
-      setUILocked(false);
-      updateUI(); // 表示更新
+      selfPlayBtn.disabled = false;
+      btnNew.disabled = false;
+      btnUndo.disabled = false;
+      updateUI();
     }
   }
-
-  btnSelf10.addEventListener("click", ()=> runSelfPlayGames(10, "strong"));
-  btnSelf50.addEventListener("click", ()=> runSelfPlayGames(50, "strong"));
 
   /* =========================
      Events
@@ -1461,13 +1500,14 @@
 
   elMode.addEventListener("change", ()=> newGame());
   elHumanColor.addEventListener("change", ()=> newGame());
-  elDiff.addEventListener("change", ()=> {});
   elBoardType.addEventListener("change", ()=> newGame());
 
   elShowSafe.addEventListener("change", ()=> draw());
 
+  devMode.addEventListener("change", ()=> updateDevUI());
+  selfPlayBtn.addEventListener("click", ()=> runSelfPlay());
+
   canvas.addEventListener("click", (ev)=>{
-    if(isSelfPlaying) return;
     const rect = canvas.getBoundingClientRect();
     const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
     const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
@@ -1477,7 +1517,6 @@
   });
 
   canvas.addEventListener("touchend", (ev)=>{
-    if(isSelfPlaying) return;
     const t = ev.changedTouches[0];
     if(!t) return;
     const rect = canvas.getBoundingClientRect();
@@ -1491,7 +1530,13 @@
   /* =========================
      Init
   ========================= */
+  devMode.checked = false; // リロードで必ずOFF
+  updateDevUI();
   updateCollectedInfo();
+
+  tryLoadOpeningBook();
+
+  elBoardType.value = "points";
   newGame();
 
 })();
