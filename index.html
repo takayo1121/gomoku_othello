@@ -167,6 +167,731 @@
       <button id="copyThisGame" disabled>この局をコピー</button>
       <button id="copyAllGames">まとめてコピー</button>
       <button id="clearCollected">履歴クリア</button>
+      <button id="selfPlay10">自己対戦×10（強）</button>
+<button id="selfPlay50">自己対戦×50（強）</button>
+      <span class="tiny" id="collectedInfo" style="margin-left:auto;"></span>
+    </div>
+
+    <div class="status" style="margin-top:10px;">
+      <div><strong id="turnText">黒番</strong> <span id="resultText" class="tiny"></span></div>
+      <div class="tiny" id="countText">黒: 0 / 白: 0　手数: 0</div>
+      <div class="tiny">
+        <span class="hintdot blue"></span>黒の安全手　
+        <span style="margin-left:10px;"></span>
+        <span class="hintdot red"></span>白の安全手
+      </div>
+      <div class="tiny">
+        クリック/タップで着手。Undoは直前手を戻します（CPU戦では「あなたの手＋CPUの手」をまとめて戻します）。
+      </div>
+      <div class="tiny">
+        ※「この局をコピー」は終局後に押せます（Undo操作は棋譜に含めません）。
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="thinking">
+  <div class="box">思考中…</div>
+</div>
+
+<div class="oktoast" id="toast"></div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* =========================
+     Config
+  ========================= */
+  const EMPTY = 0, BLACK = 1, WHITE = 2;
+  const dirs8 = [
+    [-1,-1],[-1,0],[-1,1],
+    [0,-1],       [0,1],
+    [1,-1],[1,0],[1,1]
+  ];
+  const checkDirs = [[1,0],[0,1],[1,1],[1,-1]];
+  const opp = c => (c===BLACK?WHITE:BLACK);
+
+  function getBoardConfig(){
+    const t = elBoardType.value;
+    if(t === "cells"){
+      return { type:"cells", size:6, lines:7 }; // 6x6 cells, 7 grid lines
+    }
+    return { type:"points", size:7, lines:7 };  // 7x7 points, 7 grid lines
+  }
+
+  /* =========================
+     Board / rules (generic by size)
+  ========================= */
+  const inside = (cfg,r,c) => (r>=0 && r<cfg.size && c>=0 && c<cfg.size);
+
+  const makeBoard = (cfg) => Array.from({length: cfg.size}, () => Array(cfg.size).fill(EMPTY));
+  const cloneBoard = (b) => b.map(row => row.slice());
+
+  function boardCount(b){
+    let bc=0,wc=0;
+    for(let r=0;r<b.length;r++){
+      for(let c=0;c<b[r].length;c++){
+        if(b[r][c]===BLACK) bc++;
+        else if(b[r][c]===WHITE) wc++;
+      }
+    }
+    return {bc,wc, stones: bc+wc};
+  }
+
+  function flips(cfg, b, r, c, col){
+    const out = [];
+    const o = opp(col);
+    for(const [dr,dc] of dirs8){
+      let rr=r+dr, cc=c+dc;
+      const tmp=[];
+      while(inside(cfg,rr,cc) && b[rr][cc]===o){
+        tmp.push([rr,cc]);
+        rr+=dr; cc+=dc;
+      }
+      if(tmp.length && inside(cfg,rr,cc) && b[rr][cc]===col){
+        for(const p of tmp) out.push(p);
+      }
+    }
+    return out;
+  }
+
+  function applyMove(cfg, b, r, c, col){
+    if(!inside(cfg,r,c)) return null;
+    if(b[r][c]!==EMPTY) return null;
+    const f = flips(cfg,b,r,c,col);
+    const nb = cloneBoard(b);
+    nb[r][c] = col;
+    for(const [rr,cc] of f) nb[rr][cc]=col;
+    return { board: nb, flipped: f };
+  }
+
+  function legalMoves(cfg, b){
+    const m=[];
+    for(let r=0;r<cfg.size;r++){
+      for(let c=0;c<cfg.size;c++){
+        if(b[r][c]===EMPTY) m.push([r,c]);
+      }
+    }
+    return m;
+  }
+
+  // Exact five (6+ is NOT win)
+  function findExactFiveLine(cfg, b, col){
+    for(let r=0;r<cfg.size;r++){
+      for(let c=0;c<cfg.size;c++){
+        if(b[r][c]!==col) continue;
+
+        for(const [dr,dc] of checkDirs){
+          const pr=r-dr, pc=c-dc;
+          if(inside(cfg,pr,pc) && b[pr][pc]===col) continue; // not a start
+
+          let ok=true;
+          for(let k=0;k<5;k++){
+            const rr=r+dr*k, cc=c+dc*k;
+            if(!inside(cfg,rr,cc) || b[rr][cc]!==col){ ok=false; break; }
+          }
+          if(!ok) continue;
+
+          const nr=r+dr*5, nc=c+dc*5;
+          if(inside(cfg,nr,nc) && b[nr][nc]===col) continue; // 6+ doesn't win
+
+          return { from:{r,c}, to:{ r:r+dr*4, c:c+dc*4 }, col };
+        }
+      }
+    }
+    return null;
+  }
+  const hasExactFive = (cfg,b,col) => !!findExactFiveLine(cfg,b,col);
+
+  /* =========================
+     UI / State
+  ========================= */
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
+
+  const elBoardType = document.getElementById("boardType");
+  const elMode = document.getElementById("mode");
+  const elHumanColor = document.getElementById("humanColor");
+  const elDiff = document.getElementById("difficulty");
+  const wrapHuman = document.getElementById("cpuColorWrap");
+  const wrapDiff = document.getElementById("difficultyWrap");
+  const elShowSafe = document.getElementById("showSafe");
+
+  const btnNew = document.getElementById("newGame");
+  const btnUndo = document.getElementById("undo");
+
+  const turnText = document.getElementById("turnText");
+  const resultText = document.getElementById("resultText");
+  const countText = document.getElementById("countText");
+  const ruleText = document.getElementById("ruleText");
+
+  const thinkingOverlay = document.getElementById("thinking");
+  const showThinking = on => (thinkingOverlay.style.display = on ? "flex" : "none");
+
+  const toast = document.getElementById("toast");
+  let toastTimer = null;
+  function showToast(msg){
+    if(toastTimer) clearTimeout(toastTimer);
+    toast.textContent = msg;
+    toast.style.display = "block";
+    toastTimer = setTimeout(()=>{ toast.style.display="none"; }, 1600);
+  }
+
+  // ✅ 追加：収集バッファ
+  // 1局=1レコード（JSON）を配列で保持、コピー時はJSONLとして出す
+  const collectedGames = [];
+  const btnCopyThis = document.getElementById("copyThisGame");
+  const btnCopyAll = document.getElementById("copyAllGames");
+  const btnClear = document.getElementById("clearCollected");
+  const collectedInfo = document.getElementById("collectedInfo");
+  const btnSelf10 = document.getElementById("selfPlay10");
+const btnSelf50 = document.getElementById("selfPlay50");
+
+  let game = null;
+  let isCpuThinking = false;
+
+  const colorName = c => (c===BLACK ? "黒" : "白");
+  const currentTurnName = () => (game.turn===BLACK ? "黒番" : "白番");
+
+  function isHumanTurn(){
+    if(game.mode !== "cpu") return true;
+    return game.turn === game.humanCol;
+  }
+
+  function pushHistory(){
+    game.history.push({
+      board: cloneBoard(game.board),
+      turn: game.turn,
+      over: game.over,
+      winner: game.winner,
+      winLine: game.winLine ? JSON.parse(JSON.stringify(game.winLine)) : null
+    });
+  }
+
+  function popHistory(steps=1){
+    while(steps-- > 0 && game.history.length > 1){
+      game.history.pop();
+    }
+    const last = game.history[game.history.length-1];
+    game.board = cloneBoard(last.board);
+    game.turn = last.turn;
+    game.over = last.over;
+    game.winner = last.winner;
+    game.winLine = last.winLine;
+  }
+
+  function updateRuleText(){
+    const cfg = game.cfg;
+    if(cfg.type==="points"){
+      ruleText.textContent =
+        "盤は7×7の交点。反転はオセロと同じ。勝利条件は「5個ちょうど」（6連以上は勝ちになりません）。";
+    }else{
+      ruleText.textContent =
+        "盤は6×6のマス。反転はオセロと同じ。勝利条件は「5個ちょうど」（6連以上は勝ちになりません）。";
+    }
+  }
+
+  function updateCollectedInfo(){
+    collectedInfo.textContent = `収集: ${collectedGames.length}局`;
+  }
+
+  function updateUI(){
+    if(elMode.value === "cpu"){
+      wrapHuman.style.display = "";
+      wrapDiff.style.display = "";
+    }else{
+      wrapHuman.style.display = "none";
+      wrapDiff.style.display = "none";
+    }
+
+    updateRuleText();
+    updateCollectedInfo();
+
+    turnText.textContent = game.over ? "対局終了" : currentTurnName();
+    resultText.textContent = game.over
+      ? (game.winner ? `（${colorName(game.winner)}の勝ち）` : "（引き分け）")
+      : "";
+
+    const {bc,wc,stones} = boardCount(game.board);
+    countText.textContent = `黒: ${bc} / 白: ${wc}　手数: ${stones}`;
+
+    btnUndo.disabled = (game.history.length<=1) || isCpuThinking;
+    btnNew.disabled = isCpuThinking;
+
+    // ✅ 終局したら「この局をコピー」可能
+    btnCopyThis.disabled = !game.over || isCpuThinking;
+
+    draw();
+  }
+
+  /* =========================
+     Geometry helpers (draw & click)
+  ========================= */
+  function geom(cfg){
+    const W = canvas.width;
+    const H = canvas.height;
+    const pad = 50;
+    const ox = pad, oy = pad;
+    const lines = cfg.lines;
+    const grid = (W - 2*pad) / (lines-1);
+    return {W,H,pad,ox,oy,grid,lines};
+  }
+
+  function pointXY(cfg, r, c){
+    const g = geom(cfg);
+    const x = g.ox + c*g.grid;
+    const y = g.oy + r*g.grid;
+    return {x,y};
+  }
+
+  function cellXY(cfg, r, c){
+    const g = geom(cfg);
+    const x = g.ox + (c+0.5)*g.grid;
+    const y = g.oy + (r+0.5)*g.grid;
+    return {x,y};
+  }
+
+  function rcToXY(cfg, r, c){
+    return (cfg.type==="points") ? pointXY(cfg,r,c) : cellXY(cfg,r,c);
+  }
+
+  function screenToRC(cfg, x, y){
+    const g = geom(cfg);
+
+    if(cfg.type==="points"){
+      const c = Math.round((x - g.ox)/g.grid);
+      const r = Math.round((y - g.oy)/g.grid);
+      if(!inside(cfg,r,c)) return null;
+
+      const p = pointXY(cfg,r,c);
+      const dist = Math.hypot(x-p.x, y-p.y);
+      if(dist > g.grid*0.38) return null;
+      return {r,c};
+    }else{
+      const cc = Math.floor((x - g.ox)/g.grid);
+      const rr = Math.floor((y - g.oy)/g.grid);
+      if(!inside(cfg,rr,cc)) return null;
+
+      const minX = g.ox, maxX = g.ox + g.grid*(cfg.lines-1);
+      const minY = g.oy, maxY = g.oy + g.grid*(cfg.lines-1);
+      if(x < minX || x > maxX || y < minY || y > maxY) return null;
+
+      return {r: rr, c: cc};
+    }
+  }
+
+  /* =========================
+     Drawing
+  ========================= */
+  function draw(){
+    const cfg = game.cfg;
+    const g = geom(cfg);
+
+    ctx.clearRect(0,0,g.W,g.H);
+
+    // grid lines
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(0,0,0,.35)";
+    for(let i=0;i<g.lines;i++){
+      ctx.beginPath();
+      ctx.moveTo(g.ox, g.oy + i*g.grid);
+      ctx.lineTo(g.ox + (g.lines-1)*g.grid, g.oy + i*g.grid);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(g.ox + i*g.grid, g.oy);
+      ctx.lineTo(g.ox + i*g.grid, g.oy + (g.lines-1)*g.grid);
+      ctx.stroke();
+    }
+
+    // coords
+    ctx.fillStyle = "rgba(0,0,0,.45)";
+    ctx.font = "14px system-ui";
+    for(let c=0;c<cfg.size;c++){
+      const a = String.fromCharCode(97+c);
+      const x = (cfg.type==="points")
+        ? (g.ox + c*g.grid)
+        : (g.ox + (c+0.5)*g.grid);
+      ctx.fillText(a, x - 4, g.oy - 18);
+    }
+    for(let r=0;r<cfg.size;r++){
+      const y = (cfg.type==="points")
+        ? (g.oy + r*g.grid)
+        : (g.oy + (r+0.5)*g.grid);
+      ctx.fillText(String(1+r), g.ox - 22, y + 5);
+    }
+
+    // safe moves overlay (human turn only)
+    let safeSet = null;
+    if(elShowSafe.checked && !game.over && isHumanTurn()){
+      safeSet = computeSafeMoves(game.cfg, game.board, game.turn);
+    }
+    if(safeSet){
+      for(const key of safeSet){
+        const [r,c] = key.split(",").map(Number);
+        const p = rcToXY(cfg,r,c);
+        ctx.beginPath();
+        ctx.arc(p.x,p.y,8,0,Math.PI*2);
+        ctx.fillStyle = (game.turn===BLACK) ? "rgba(58,160,255,.95)" : "rgba(255,82,82,.95)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,.25)";
+        ctx.stroke();
+      }
+    }
+
+    // stones
+    for(let r=0;r<cfg.size;r++){
+      for(let c=0;c<cfg.size;c++){
+        const v = game.board[r][c];
+        if(v===EMPTY) continue;
+        const p = rcToXY(cfg,r,c);
+
+        ctx.beginPath();
+        ctx.arc(p.x+2,p.y+3,20,0,Math.PI*2);
+        ctx.fillStyle = "rgba(0,0,0,.22)";
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(p.x,p.y,20,0,Math.PI*2);
+        if(v===BLACK){
+          const gg = ctx.createRadialGradient(p.x-6,p.y-6,4, p.x,p.y,24);
+          gg.addColorStop(0,"#444");
+          gg.addColorStop(1,"#070707");
+          ctx.fillStyle = gg;
+        }else{
+          const gg = ctx.createRadialGradient(p.x-6,p.y-6,4, p.x,p.y,24);
+          gg.addColorStop(0,"#fff");
+          gg.addColorStop(1,"#d9d9d9");
+          ctx.fillStyle = gg;
+        }
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,.25)";
+        ctx.stroke();
+      }
+    }
+
+    // WIN LINE (solid only)
+    if(game.over && game.winLine){
+      const {from,to,col} = game.winLine;
+      const p1 = rcToXY(cfg, from.r, from.c);
+      const p2 = rcToXY(cfg, to.r, to.c);
+
+      const main = (col===BLACK) ? "rgba(58,160,255,.95)" : "rgba(255,82,82,.95)";
+      ctx.lineCap = "round";
+
+      ctx.beginPath();
+      ctx.moveTo(p1.x,p1.y);
+      ctx.lineTo(p2.x,p2.y);
+      ctx.lineWidth = 12;
+      ctx.strokeStyle = "rgba(0,0,0,.25)";
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(p1.x,p1.y);
+      ctx.lineTo(p2.x,p2.y);
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = main;
+      ctx.stroke();
+    }
+
+    // end overlay text
+    if(game.over){
+      ctx.fillStyle = "rgba(0,0,0,.25)";
+      ctx.fillRect(0, g.H/2-34, g.W, 68);
+      ctx.fillStyle = "rgba(255,255,255,.95)";
+      ctx.font = "bold 22px system-ui";
+      const t = game.winner ? `${colorName(game.winner)}の勝ち` : "引き分け";
+      const w = ctx.measureText(t).width;
+      ctx.fillText(t, (g.W-w)/2, g.H/2+8);
+    }
+  }
+
+  /* =========================
+     Safe move display
+  ========================= */
+  function computeSafeMoves(cfg, b, turnCol){
+    const moves = legalMoves(cfg, b);
+    const safe = new Set();
+    for(const [r,c] of moves){
+      const res = applyMove(cfg, b, r,c,turnCol);
+      if(!res) continue;
+      const nb = res.board;
+
+      if(hasExactFive(cfg, nb, turnCol)){
+        safe.add(`${r},${c}`);
+        continue;
+      }
+
+      const op = opp(turnCol);
+      const replies = legalMoves(cfg, nb);
+      let oppWins = false;
+      for(const [rr,cc] of replies){
+        const rres = applyMove(cfg, nb, rr, cc, op);
+        if(!rres) continue;
+        if(hasExactFive(cfg, rres.board, op)){
+          oppWins = true;
+          break;
+        }
+      }
+      if(!oppWins) safe.add(`${r},${c}`);
+    }
+    return safe;
+  }
+
+  /* =========================
+     Kifu (collect & copy)
+  ========================= */
+  function rcToPos(cfg, r, c){
+    // a.. for columns, 1.. for rows (top=1)
+    const col = String.fromCharCode(97 + c);
+    const row = String(1 + r);
+    return `${col}${row}`;
+  }
+
+  function makeKifuRecord(){
+    // Undoは「カウントしない」＝最終的に残った着手列のみを送る
+    // この実装では game.moves に「確定した着手」だけを積んでいる
+    const cfg = game.cfg;
+    const rule = (cfg.type==="points")
+      ? "gomoku-othello exact-five (points 7x7)"
+      : "gomoku-othello exact-five (cells 6x6)";
+
+    const mode = game.mode; // pvp/cpu
+    const difficulty = (mode==="cpu") ? elDiff.value : null;
+
+    const rec = {
+      v: 1,
+      createdAt: new Date().toISOString(),
+      size: cfg.size,
+      boardType: cfg.type,
+      rule,
+      mode,
+      difficulty,
+      humanColor: (mode==="cpu") ? (game.humanCol===BLACK?"B":"W") : null,
+      winner: game.winner ? (game.winner===BLACK?"B":"W") : null,
+      moves: game.moves.map(m => ({
+        t: m.t, // "B"/"W"
+        r: m.r, c: m.c,
+        pos: rcToPos(cfg, m.r, m.c)
+      }))
+    };
+    return rec;
+  }
+
+  async function copyTextToClipboard(txt){
+    // iOS Safariなども考慮して fallback 付き
+    try{
+      await navigator.clipboard.writeText(txt);
+      return true;
+    }catch(_e){
+      try{
+        const ta = document.createElement("textarea");
+        ta.value = txt;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        ta.style.top = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return ok;
+      }catch(_e2){
+        return false;
+      }
+    }
+  }
+
+  btnCopyThis.addEventListener("click", async ()=>{
+    if(!game.over) return;
+    const rec = makeKifuRecord();
+    const txt = JSON.stringify(rec);
+    const ok = await copyTextToClipboard(txt);
+    showToast(ok ? "この局をコピーしました" : "コピーに失敗しました");
+  });
+
+  btnCopyAll.addEventListener("click", async ()=>{
+    // JSONL: 1行=1局(JSON)
+    const txt = collectedGames.map(g => JSON.stringify(g)).join("\n") + (collectedGames.length? "\n" : "");
+    const ok = await copyTextToClipboard(txt);
+    showToast(ok ? `まとめてコピーしました（${collectedGames.length}局）` : "コピーに失敗しました");
+  });
+
+  btnClear.addEventListener("click", ()=>{
+    collectedGames.length = 0;
+    updateCollectedInfo();
+    showToast("履歴をクリアしました");
+  });
+  <!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>五目オセロ（交点/マス切替・5個ちょうど勝利）</title>
+<style>
+  :root{
+    --text:#e6eef8;
+    --muted:#9fb0c5;
+    --wood:#caa56a;
+    --wood2:#b98f4f;
+  }
+  body{
+    margin:0;
+    background:linear-gradient(180deg,#0b0f14,#07111d);
+    color:var(--text);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:16px;
+    gap:12px;
+  }
+  .wrap{
+    width:min(980px, 100%);
+    display:grid;
+    grid-template-columns: 1fr;
+    gap:12px;
+  }
+  @media(min-width:880px){
+    .wrap{ grid-template-columns: 520px 1fr; align-items:start; }
+  }
+  .card{
+    background:rgba(17,24,38,.88);
+    border:1px solid rgba(43,58,82,.7);
+    border-radius:14px;
+    padding:12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .row > *{ margin:4px 0; }
+  label{ font-size:13px; color:var(--muted); }
+  select, button, input[type="checkbox"]{ font-size:14px; }
+  select, button{
+    background:#0f1726;
+    color:var(--text);
+    border:1px solid rgba(43,58,82,.8);
+    border-radius:10px;
+    padding:8px 10px;
+  }
+  button{ cursor:pointer; }
+  button:hover{ border-color: rgba(74,163,255,.9); }
+  button:disabled{ opacity:.45; cursor:not-allowed; }
+  .tiny{ font-size:12px; color:var(--muted); }
+  .status{ display:flex; flex-direction:column; gap:6px; font-size:14px; }
+  .status strong{ font-size:16px; }
+  canvas{
+    width:100%;
+    height:auto;
+    border-radius:14px;
+    background: radial-gradient(circle at 30% 20%, rgba(255,255,255,.08), rgba(0,0,0,0) 45%),
+                linear-gradient(135deg, var(--wood), var(--wood2));
+    border:1px solid rgba(43,58,82,.8);
+    touch-action: manipulation;
+  }
+  .hintdot{
+    width:10px; height:10px; border-radius:50%;
+    display:inline-block; vertical-align:middle; margin-right:6px;
+  }
+  .blue{ background:#3aa0ff; }
+  .red{ background:#ff5252; }
+
+  .overlay{
+    position:fixed;
+    inset:0;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    background:rgba(0,0,0,.35);
+    z-index:10;
+    pointer-events:none;
+  }
+  .overlay .box{
+    background:rgba(17,24,38,.95);
+    border:1px solid rgba(74,163,255,.5);
+    border-radius:16px;
+    padding:18px 22px;
+    font-size:18px;
+    box-shadow:0 20px 60px rgba(0,0,0,.55);
+  }
+  .oktoast{
+    position:fixed;
+    bottom:14px;
+    left:50%;
+    transform:translateX(-50%);
+    background:rgba(17,24,38,.95);
+    border:1px solid rgba(74,163,255,.5);
+    color:var(--text);
+    padding:10px 12px;
+    border-radius:12px;
+    font-size:13px;
+    display:none;
+    z-index:20;
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="card">
+    <canvas id="board" width="520" height="520"></canvas>
+    <div class="tiny" style="margin-top:8px; line-height:1.6;">
+      ＜ルール＞<br>
+      <span id="ruleText"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label>盤タイプ</label>
+      <select id="boardType">
+        <option value="points">交点（7×7）</option>
+        <option value="cells">マス（6×6）</option>
+      </select>
+
+      <span style="margin-left:auto;"></span>
+
+      <label>対戦</label>
+      <select id="mode">
+        <option value="pvp">人 vs 人</option>
+        <option value="cpu">人 vs CPU</option>
+      </select>
+
+      <span id="cpuColorWrap" style="display:none;">
+        <label style="margin-left:8px;">あなたの手番</label>
+        <select id="humanColor">
+          <option value="black">黒（先手）</option>
+          <option value="white">白（後手）</option>
+        </select>
+      </span>
+
+      <span id="difficultyWrap" style="display:none;">
+        <label style="margin-left:8px;">CPU難易度</label>
+        <select id="difficulty">
+          <option value="easy">弱</option>
+          <option value="medium">中</option>
+          <option value="strong">強</option>
+        </select>
+      </span>
+    </div>
+
+    <div class="row" style="margin-top:6px;">
+      <button id="newGame">新規ゲーム</button>
+      <button id="undo">Undo</button>
+
+      <span style="margin-left:auto;"></span>
+
+      <label style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="showSafe" />
+        安全手を表示（あなたの手番のみ）
+      </label>
+    </div>
+
+    <!-- ✅ 追加：棋譜収集 -->
+    <div class="row" style="margin-top:10px;">
+      <button id="copyThisGame" disabled>この局をコピー</button>
+      <button id="copyAllGames">まとめてコピー</button>
+      <button id="clearCollected">履歴クリア</button>
       <span class="tiny" id="collectedInfo" style="margin-left:auto;"></span>
     </div>
 
@@ -943,6 +1668,804 @@
         score += (v===me ? +w : -w);
       }
     }
+
+    function lineFeature(r, c, col, dr, dc){
+      let a=0, rr=r+dr, cc=c+dc;
+      while(inside(cfg,rr,cc) && b[rr][cc]===col){ a++; rr+=dr; cc+=dc; }
+      const end1 = (inside(cfg,rr,cc) && b[rr][cc]===EMPTY) ? 1 : 0;
+
+      let bcnt=0; rr=r-dr; cc=c-dc;
+      while(inside(cfg,rr,cc) && b[rr][cc]===col){ bcnt++; rr-=dr; cc-=dc; }
+      const end2 = (inside(cfg,rr,cc) && b[rr][cc]===EMPTY) ? 1 : 0;
+
+      return {len:1+a+bcnt, open:end1+end2};
+    }
+
+    function add(col, sign){
+      for(let r=0;r<cfg.size;r++){
+        for(let c=0;c<cfg.size;c++){
+          if(b[r][c]!==col) continue;
+          for(const [dr,dc] of checkDirs){
+            const f = lineFeature(r,c,col,dr,dc);
+            if(f.len>=4){
+              score += sign * (f.open===2 ? 700000 : f.open===1 ? 160000 : 24000);
+            }else if(f.len===3){
+              score += sign * (f.open===2 ? 28000 : f.open===1 ? 7600 : 700);
+            }else if(f.len===2){
+              score += sign * (f.open===2 ? 950 : f.open===1 ? 240 : 28);
+            }
+          }
+        }
+      }
+    }
+    add(me,+1); add(op,-1);
+
+    const myWin = countImmediateExactWins(cfg,b,me);
+    const opWin = countImmediateExactWins(cfg,b,op);
+    if(myWin>=2) score += 5e8;
+    else if(myWin===1) score += 8e6;
+    if(opWin>=2) score -= 6e8;
+    else if(opWin===1) score -= 1.2e7;
+
+    return score;
+  }
+
+  function candidateMoves(cfg, b, radius){
+    const {stones} = boardCount(b);
+    if(stones===0){
+      if(cfg.size % 2 === 1){
+        const mid = (cfg.size-1)/2;
+        const m = mid|0;
+        return [
+          [m,m],[m,m-1],[m-1,m],[m,m+1],[m+1,m],
+          [m-1,m-1],[m+1,m+1],[m-1,m+1],[m+1,m-1]
+        ].filter(([r,c])=>inside(cfg,r,c));
+      }else{
+        const a = cfg.size/2 - 1;
+        const b0 = cfg.size/2;
+        return [
+          [a,a],[a,b0],[b0,a],[b0,b0],
+          [a,a-1],[a-1,a],[b0,b0+1],[b0+1,b0]
+        ].filter(([r,c])=>inside(cfg,r,c));
+      }
+    }
+    if(stones>=Math.floor(cfg.size*cfg.size*0.75)) return legalMoves(cfg,b);
+
+    const set = new Set();
+    for(let r=0;r<cfg.size;r++){
+      for(let c=0;c<cfg.size;c++){
+        if(b[r][c]===EMPTY) continue;
+        for(let dr=-radius; dr<=radius; dr++){
+          for(let dc=-radius; dc<=radius; dc++){
+            const rr=r+dr, cc=c+dc;
+            if(inside(cfg,rr,cc) && b[rr][cc]===EMPTY){
+              set.add(rr*100+cc);
+            }
+          }
+        }
+      }
+    }
+    const out=[];
+    for(const v of set) out.push([Math.floor(v/100), v%100]);
+    return out;
+  }
+
+  function orderMoves(cfg, b, col, maxCand){
+    const {stones} = boardCount(b);
+    const radius = stones<=10 ? 3 : 4;
+    const cand = candidateMoves(cfg,b, radius);
+    const op = opp(col);
+
+    const oppWinSet = new Set();
+    for(const [r,c] of cand){
+      const t = applyMove(cfg,b,r,c,op);
+      if(t && hasExactFive(cfg,t.board,op)) oppWinSet.add(r*100+c);
+    }
+
+    const scored = [];
+    for(const [r,c] of cand){
+      const t = applyMove(cfg,b,r,c,col);
+      if(!t) continue;
+
+      const winNow = hasExactFive(cfg,t.board,col) ? 1 : 0;
+      const blocks = oppWinSet.has(r*100+c) ? 1 : 0;
+
+      const forks = countImmediateExactWins(cfg,t.board,col);
+      const forkBonus = forks>=2 ? 1 : forks===1 ? 0.2 : 0;
+
+      const rough = evalPos(cfg,t.board,col);
+      const pri = winNow*1e18 + blocks*8e17 + forkBonus*4e16 + rough;
+      scored.push({r,c,pri});
+    }
+    scored.sort((a,b)=> b.pri - a.pri);
+    return scored.slice(0, maxCand).map(x=>({r:x.r,c:x.c}));
+  }
+
+  function terminalScore(cfg, b, me){
+    const op = opp(me);
+    if(hasExactFive(cfg,b,me)) return 1e15;
+    if(hasExactFive(cfg,b,op)) return -1e15;
+    if(legalMoves(cfg,b).length===0) return 0;
+    return null;
+  }
+
+  const TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2;
+
+  function boardKey(cfg, b, turn){
+    let s = (cfg.type==="cells" ? "C" : "P") + (turn===BLACK ? "B|" : "W|");
+    for(let r=0;r<cfg.size;r++){
+      const row = b[r];
+      for(let c=0;c<cfg.size;c++){
+        s += row[c];
+      }
+    }
+    return s;
+  }
+
+  function dynamicMaxCand(cfg, stones, depth, remainMs){
+    if(stones <= 2) return 22;
+    let base = (stones <= 10) ? 20 : 26;
+    if(depth >= 7) base -= 6;
+    if(depth >= 9) base -= 4;
+    if(remainMs < 900) base -= 6;
+    if(remainMs < 450) base -= 4;
+    if(cfg.size === 6) base -= 2;
+    return Math.max(10, Math.min(28, base));
+  }
+
+  function shouldQuiesce(cfg, b, me){
+    const op = opp(me);
+    if(countImmediateExactWins(cfg,b,me) >= 1) return true;
+    if(countImmediateExactWins(cfg,b,op) >= 1) return true;
+    return false;
+  }
+
+  function forcingMoves(cfg, b, turn){
+    const win = immediateWinMove(cfg,b,turn);
+    if(win) return [win];
+
+    const op = opp(turn);
+    const out = [];
+    const moves = legalMoves(cfg,b);
+    for(const [r,c] of moves){
+      const tOpp = applyMove(cfg,b,r,c,op);
+      if(tOpp && hasExactFive(cfg,tOpp.board,op)){
+        out.push({r,c});
+      }
+    }
+    if(out.length){
+      const seen = new Set();
+      const uniq = [];
+      for(const m of out){
+        const k = m.r*100+m.c;
+        if(!seen.has(k)){ seen.add(k); uniq.push(m); }
+      }
+      return uniq;
+    }
+
+    const cand = orderMoves(cfg,b,turn, 18);
+    const forks = [];
+    for(const m of cand){
+      const t = applyMove(cfg,b,m.r,m.c,turn);
+      if(!t) continue;
+      if(countImmediateExactWins(cfg,t.board,turn) >= 2){
+        forks.push(m);
+        if(forks.length>=6) break;
+      }
+    }
+    return forks;
+  }
+
+  async function quiescence(cfg, b, qDepth, alpha, beta, me, turn, deadline, tt){
+    if(nowMs() > deadline) return evalPos(cfg,b,me);
+
+    const term = terminalScore(cfg,b,me);
+    if(term !== null) return term;
+
+    const stand = evalPos(cfg,b,me);
+    if(qDepth <= 0) return stand;
+
+    if(!shouldQuiesce(cfg,b,me)) return stand;
+
+    if(turn === me){
+      if(stand > alpha) alpha = stand;
+      if(alpha >= beta) return alpha;
+    }else{
+      if(stand < beta) beta = stand;
+      if(alpha >= beta) return beta;
+    }
+
+    const moves = forcingMoves(cfg,b,turn);
+    if(!moves.length) return stand;
+
+    const maximizing = (turn===me);
+    let best = maximizing ? -Infinity : Infinity;
+
+    for(const m of moves){
+      if(nowMs() > deadline) break;
+      const t = applyMove(cfg,b,m.r,m.c,turn);
+      if(!t) continue;
+
+      const val = await quiescence(cfg, t.board, qDepth-1, alpha, beta, me, opp(turn), deadline, tt);
+
+      if(maximizing){
+        if(val > best) best = val;
+        if(best > alpha) alpha = best;
+      }else{
+        if(val < best) best = val;
+        if(best < beta) beta = best;
+      }
+      if(beta <= alpha) break;
+    }
+    return (best===Infinity || best===-Infinity) ? stand : best;
+  }
+
+  async function alphabeta(cfg, b, depth, alpha, beta, me, turn, deadline, tt){
+    if(nowMs() > deadline) return evalPos(cfg,b,me);
+
+    const term = terminalScore(cfg,b,me);
+    if(term !== null) return term;
+
+    const key = boardKey(cfg,b,turn);
+    const hit = tt.get(key);
+    if(hit && hit.depth >= depth){
+      if(hit.flag === TT_EXACT) return hit.val;
+      if(hit.flag === TT_LOWER) alpha = Math.max(alpha, hit.val);
+      else if(hit.flag === TT_UPPER) beta = Math.min(beta, hit.val);
+      if(beta <= alpha) return hit.val;
+    }
+
+    if(depth === 0){
+      const val = await quiescence(cfg, b, 2, alpha, beta, me, turn, deadline, tt);
+      tt.set(key, {depth, val, flag: TT_EXACT});
+      return val;
+    }
+
+    const maximizing = (turn===me);
+    let best = maximizing ? -Infinity : Infinity;
+
+    const {stones} = boardCount(b);
+    const remain = Math.max(0, deadline - nowMs());
+    const maxCand = dynamicMaxCand(cfg, stones, depth, remain);
+    const moves = orderMoves(cfg, b, turn, maxCand);
+    if(!moves.length){
+      const val = evalPos(cfg,b,me);
+      tt.set(key, {depth, val, flag: TT_EXACT});
+      return val;
+    }
+
+    const a0 = alpha, b0 = beta;
+
+    for(const m of moves){
+      if(nowMs() > deadline) break;
+      const t = applyMove(cfg,b,m.r,m.c,turn);
+      if(!t) continue;
+
+      const val = await alphabeta(cfg, t.board, depth-1, alpha, beta, me, opp(turn), deadline, tt);
+
+      if(maximizing){
+        if(val > best) best = val;
+        if(best > alpha) alpha = best;
+      }else{
+        if(val < best) best = val;
+        if(best < beta) beta = best;
+      }
+      if(beta <= alpha) break;
+    }
+
+    let flag = TT_EXACT;
+    if(best <= a0) flag = TT_UPPER;
+    else if(best >= b0) flag = TT_LOWER;
+
+    if(tt.size > 60000) tt.clear();
+    tt.set(key, {depth, val: best, flag});
+    return best;
+  }
+
+  async function iterativeDeepening(cfg, rootBoard, me, budgetMs, depthCap){
+    const deadline = nowMs() + budgetMs;
+
+    const tt = new Map();
+    let bestMove = null;
+
+    const {stones} = boardCount(rootBoard);
+    const rootTopK = stones <= 10 ? 6 : 4;
+
+    for(let depth=3; depth<=depthCap; depth++){
+      if(nowMs() > deadline) break;
+
+      const remain = Math.max(0, deadline - nowMs());
+      const maxCand = dynamicMaxCand(cfg, stones, depth, remain);
+      let moves = orderMoves(cfg, rootBoard, me, maxCand);
+      if(!moves.length) break;
+
+      if(bestMove){
+        const idx = moves.findIndex(m => m.r===bestMove.r && m.c===bestMove.c);
+        if(idx > 0){
+          const [pv] = moves.splice(idx,1);
+          moves.unshift(pv);
+        }
+      }
+
+      let localBest = bestMove || moves[0];
+      let localBestVal = -Infinity;
+
+      for(let i=0;i<moves.length;i++){
+        if(nowMs() > deadline) break;
+
+        const m = moves[i];
+        const t = applyMove(cfg, rootBoard, m.r, m.c, me);
+        if(!t) continue;
+
+        const extra = (i < rootTopK) ? 1 : 0;
+        const searchDepth = Math.max(0, depth - 1 + extra);
+
+        const val = await alphabeta(cfg, t.board, searchDepth, -Infinity, Infinity, me, opp(me), deadline, tt);
+
+        if(val > localBestVal){
+          localBestVal = val;
+          localBest = m;
+        }
+
+        if(depth >= 5) await sleep(0);
+      }
+
+      bestMove = localBest;
+    }
+    return bestMove;
+  }
+
+  async function pickCpuMove(cfg, b, col, budgetMs, difficulty){
+    const win = immediateWinMove(cfg,b,col);
+    if(win) return win;
+    const block = blockOpponentWinMove(cfg,b,col);
+    if(block) return block;
+
+    if(difficulty==="easy"){
+      const moves = orderMoves(cfg,b,col,10);
+      if(!moves.length) return null;
+      return moves[Math.floor(Math.random()*Math.min(3,moves.length))];
+    }
+
+    if(difficulty==="medium"){
+      return await iterativeDeepening(cfg,b,col, Math.min(budgetMs, 2000), 9);
+    }
+
+    const cap = (cfg.size===6) ? 13 : 14;
+    return await iterativeDeepening(cfg,b,col, budgetMs, cap);
+  }
+
+  /* =========================
+     Events
+  ========================= */
+  btnNew.addEventListener("click", ()=> newGame());
+  btnUndo.addEventListener("click", ()=> undo());
+
+  elMode.addEventListener("change", ()=> newGame());
+  elHumanColor.addEventListener("change", ()=> newGame());
+  elDiff.addEventListener("change", ()=> {});
+  elBoardType.addEventListener("change", ()=> newGame());
+
+  elShowSafe.addEventListener("change", ()=> draw());
+
+  canvas.addEventListener("click", (ev)=>{
+    const rect = canvas.getBoundingClientRect();
+    const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const rc = screenToRC(game.cfg, x, y);
+    if(!rc) return;
+    playAt(rc.r, rc.c);
+  });
+
+  canvas.addEventListener("touchend", (ev)=>{
+    const t = ev.changedTouches[0];
+    if(!t) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (t.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (t.clientY - rect.top) * (canvas.height / rect.height);
+    const rc = screenToRC(game.cfg, x, y);
+    if(!rc) return;
+    playAt(rc.r, rc.c);
+  });
+
+  /* =========================
+     Init
+  ========================= */
+  updateCollectedInfo();
+  newGame();
+
+})();
+</script>
+
+</body>
+</html>
+
+  /* =========================
+     Game flow
+  ========================= */
+  function maybeEndAfterMove(){
+    const bl = findExactFiveLine(game.cfg, game.board, BLACK);
+    if(bl){
+      game.over = true; game.winner = BLACK; game.winLine = bl;
+      return true;
+    }
+    const wl = findExactFiveLine(game.cfg, game.board, WHITE);
+    if(wl){
+      game.over = true; game.winner = WHITE; game.winLine = wl;
+      return true;
+    }
+    if(legalMoves(game.cfg, game.board).length===0){
+      game.over = true; game.winner = null; game.winLine = null;
+      return true;
+    }
+    return false;
+  }
+
+  function finalizeIfOver(){
+    // 終局したらこの局を収集バッファに追加（1局=新規ゲーム→終局）
+    if(game.over && !game._collectedThisGame){
+      const rec = makeKifuRecord();
+      collectedGames.push(rec);
+      game._collectedThisGame = true;
+      updateCollectedInfo();
+      showToast(`終局を記録しました（累計${collectedGames.length}局）`);
+    }
+  }
+
+  const sleep = ms => new Promise(r=>setTimeout(r,ms));
+  const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
+  const nowMs = () => performance.now();
+
+  async function playAt(r,c){
+    if(game.over) return;
+    if(isCpuThinking) return;
+    if(game.mode==="cpu" && game.turn===game.cpuCol) return;
+
+    const res = applyMove(game.cfg, game.board, r,c, game.turn);
+    if(!res) return;
+
+    // ✅ 確定着手として記録（Undoは別で扱う）
+    game.moves.push({ t: game.turn===BLACK ? "B" : "W", r, c });
+
+    game.board = res.board;
+    game.turn = opp(game.turn);
+
+    maybeEndAfterMove();
+    pushHistory();
+    updateUI();
+
+    finalizeIfOver();
+
+    // flush paint before CPU starts thinking (removes input lag)
+    if(game.mode==="cpu" && !game.over){
+      await nextFrame();
+      await sleep(0);
+      maybeCpuMove();
+    }
+  }
+
+  function undo(){
+    if(isCpuThinking) return;
+    if(game.history.length<=1) return;
+
+    if(game.mode==="cpu"){
+      // undo both human+cpu as before
+      popHistory(2);
+      // ✅ movesも2手戻す（足りない場合は0まで）
+      game.moves.pop();
+      game.moves.pop();
+    }else{
+      popHistory(1);
+      game.moves.pop();
+    }
+
+    // いったん終局扱いだった場合も戻るので、局の収集フラグを外す
+    game._collectedThisGame = false;
+
+    updateUI();
+  }
+
+  function newGame(){
+    const cfg = getBoardConfig();
+    const mode = elMode.value;
+    const humanIsBlack = (elHumanColor.value === "black");
+    const humanCol = humanIsBlack ? BLACK : WHITE;
+    const cpuCol = opp(humanCol);
+
+    game = {
+      cfg,
+      mode,
+      board: makeBoard(cfg),
+      turn: BLACK,
+      over: false,
+      winner: null,
+      winLine: null,
+      history: [],
+      humanCol,
+      cpuCol,
+      pvMove: null,
+      moves: [],               // ✅ 追加：この局の確定着手列
+      _collectedThisGame: false
+    };
+
+    elShowSafe.checked = false;
+    pushHistory();
+    updateUI();
+    maybeCpuMove();
+  }
+
+  /* =========================
+     CPU AI (PV + TT + dynamic candidates + quiescence + root extensions)
+     - budgets: <=6 ply 3s, <=14 ply 7s, else 20s (strong)
+     - min tempo: 0.5s
+     - show "思考中…" if thinking >3s
+  ========================= */
+  function timeBudgetMs(){
+    const stones = boardCount(game.board).stones;
+    const ply = stones + 1;
+    const d = elDiff.value;
+
+    if(d==="easy") return 250;
+    if(d==="medium") return 1500;
+
+    if(ply <= 6) return 3000;
+    if(ply <= 14) return 7000;
+    return 20000;
+  }
+
+  async function maybeCpuMove(){
+    if(game.mode!=="cpu") return;
+    if(game.over) return;
+    if(game.turn !== game.cpuCol) return;
+
+    isCpuThinking = true;
+    updateUI();
+
+    const budget = timeBudgetMs();
+    const cpuTurnStart = nowMs();
+    const thinkLabelTimer = setTimeout(()=>{ showThinking(true); }, 3000);
+
+    try{
+      const move = await pickCpuMove(game.cfg, game.board, game.turn, budget, elDiff.value);
+
+      const elapsed = nowMs() - cpuTurnStart;
+      if(elapsed < 500) await sleep(500 - elapsed);
+
+      clearTimeout(thinkLabelTimer);
+      showThinking(false);
+
+      if(game.over) return;
+
+      if(move){
+        const res = applyMove(game.cfg, game.board, move.r, move.c, game.turn);
+        if(res){
+          game.board = res.board;
+          // ✅ CPUの確定着手
+          game.moves.push({ t: game.turn===BLACK ? "B" : "W", r: move.r, c: move.c });
+        }
+      }
+      game.turn = opp(game.turn);
+
+      maybeEndAfterMove();
+      pushHistory();
+
+      finalizeIfOver();
+    } finally {
+      clearTimeout(thinkLabelTimer);
+      showThinking(false);
+      isCpuThinking = false;
+      updateUI();
+    }
+  }
+
+  function immediateWinMove(cfg, b, col){
+    for(const [r,c] of legalMoves(cfg,b)){
+      const res = applyMove(cfg,b,r,c,col);
+      if(res && hasExactFive(cfg,res.board,col)) return {r,c};
+    }
+    return null;
+  }
+  function blockOpponentWinMove(cfg, b, col){
+    const op = opp(col);
+    for(const [r,c] of legalMoves(cfg,b)){
+      const res = applyMove(cfg,b,r,c,op);
+      if(res && hasExactFive(cfg,res.board,op)) return {r,c};
+    }
+    return null;
+  }
+
+  function countImmediateExactWins(cfg, b, col){
+    let cnt=0;
+    for(const [r,c] of legalMoves(cfg,b)){
+      const res = applyMove(cfg,b,r,c,col);
+      if(res && hasExactFive(cfg,res.board,col)){
+        cnt++;
+        if(cnt>=2) return 2;
+      }
+    }
+    return cnt;
+  }
+
+ function evalPos(cfg, b, me){
+  const op = opp(me);
+  if(hasExactFive(cfg,b,me)) return 1e15;
+  if(hasExactFive(cfg,b,op)) return -1e15;
+
+  let score = 0;
+
+  // -------------------------
+  // A) 角・端・中心（安定度）評価
+  // 角＞端＞内側、ただし中心も少しだけ加点（展開力）
+  // -------------------------
+  const N = cfg.size;
+  const center = (N - 1) / 2;
+
+  function isCorner(r,c){
+    return (r===0 || r===N-1) && (c===0 || c===N-1);
+  }
+  function isEdge(r,c){
+    return (r===0 || r===N-1 || c===0 || c===N-1);
+  }
+
+  for(let r=0;r<N;r++){
+    for(let c=0;c<N;c++){
+      const v=b[r][c];
+      if(v===EMPTY) continue;
+
+      // center-ish (小さめ)
+      const cd = Math.abs(r-center)+Math.abs(c-center);
+      const centerW = 3 - cd*0.4; // だいたい -?〜+?
+      // edge/corner (大きめ)
+      let stableW = 0;
+      if(isCorner(r,c)) stableW = 40;
+      else if(isEdge(r,c)) stableW = 12;
+
+      const w = stableW + centerW;
+      score += (v===me ? +w : -w);
+    }
+  }
+
+  // -------------------------
+  // B) 「端からの塊」はひっくり返されにくい（角起点の連結）
+  // 角から端方向に同色が連続しているほど加点（あなたの戦術の核）
+  // -------------------------
+  function cornerChainBonus(col){
+    let s=0;
+
+    // 4 corners
+    const corners = [
+      [0,0, 0,1, 1,0],           // (r,c, rowStep, colStep, altStep) は下で使う
+      [0,N-1, 0,-1, 1,0],
+      [N-1,0, 0,1, -1,0],
+      [N-1,N-1, 0,-1, -1,0],
+    ];
+
+    for(const [cr,cc, drRow, dcRow, drCol, dcCol] of corners){
+      if(b[cr][cc] !== col) continue;
+
+      // corner itself
+      s += 60;
+
+      // along edge row from corner
+      let len1=0;
+      for(let k=1;k<N;k++){
+        const r = cr + drRow*k;
+        const c = cc + dcRow*k;
+        if(!inside(cfg,r,c)) break;
+        if(b[r][c]===col) { len1++; s += 18; } // 連続なら強め
+        else break;
+      }
+
+      // along edge col from corner
+      let len2=0;
+      for(let k=1;k<N;k++){
+        const r = cr + drCol*k;
+        const c = cc + dcCol*k;
+        if(!inside(cfg,r,c)) break;
+        if(b[r][c]===col) { len2++; s += 18; }
+        else break;
+      }
+
+      // 角から「横＋縦」で広がる形ができてるとさらに加点
+      s += Math.min(len1,3)*10 + Math.min(len2,3)*10;
+    }
+    return s;
+  }
+
+  score += cornerChainBonus(me);
+  score -= cornerChainBonus(op);
+
+  // -------------------------
+  // C) 5連候補（ちょうど5連）を、"5マス区間"で評価
+  // 7x7なら「勝てる列は限られている」のでこの表現が効きやすい
+  // - 自分の 4+空1 は強い（ただし相手の即勝ちを許す手は別で抑える）
+  // - 相手の 4+空1 は危険
+  // - 端点を押さえて列を"死なせる"（あなたの言う戦術）を評価に入れる
+  // -------------------------
+  function segScoreFor(col){
+    const enemy = opp(col);
+    let s=0;
+
+    // 5-length segments in 4 dirs
+    const dirs = [[1,0],[0,1],[1,1],[1,-1]];
+
+    for(let r=0;r<N;r++){
+      for(let c=0;c<N;c++){
+        for(const [dr,dc] of dirs){
+          const r4 = r + dr*4;
+          const c4 = c + dc*4;
+          if(!inside(cfg,r4,c4)) continue;
+
+          let my=0, en=0, emp=0;
+          for(let k=0;k<5;k++){
+            const rr=r+dr*k, cc=c+dc*k;
+            const v = b[rr][cc];
+            if(v===col) my++;
+            else if(v===enemy) en++;
+            else emp++;
+          }
+
+          // この5区間が「その色の候補」として成立しているか（敵が混じると死ぬ）
+          if(en>0 && my>0){
+            // 両方混在 → その列は「互いに汚れていて」価値が下がる（死に列方向）
+            s -= 6;
+            continue;
+          }
+
+          // 自分候補
+          if(en===0){
+            // 端点を押さえると相手は揃えづらい（特に端・角ならさらに）
+            const v0 = b[r][c];
+            const v4 = b[r4][c4];
+            const endHold =
+              (v0===col ? (isCorner(r,c)?22:isEdge(r,c)?10:4) : 0) +
+              (v4===col ? (isCorner(r4,c4)?22:isEdge(r4,c4)?10:4) : 0);
+
+            if(my===5) s += 1e6;
+            else if(my===4 && emp===1) s += 22000 + endHold*80;
+            else if(my===3 && emp===2) s += 2400 + endHold*35;
+            else if(my===2 && emp===3) s += 280 + endHold*10;
+            else if(my===1 && emp===4) s += 25 + endHold*4;
+          }
+
+          // 相手候補（危険評価）
+          if(my===0){
+            // 相手の端点が固まる前に潰したいので、相手の端点保持は危険度を上げる
+            const v0 = b[r][c];
+            const v4 = b[r4][c4];
+            const oppEnd =
+              (v0===enemy ? (isCorner(r,c)?22:isEdge(r,c)?10:4) : 0) +
+              (v4===enemy ? (isCorner(r4,c4)?22:isEdge(r4,c4)?10:4) : 0);
+
+            if(en===5) s -= 1e6;
+            else if(en===4 && emp===1) s -= 26000 + oppEnd*90;
+            else if(en===3 && emp===2) s -= 2600 + oppEnd*40;
+            else if(en===2 && emp===3) s -= 320 + oppEnd*12;
+            else if(en===1 && emp===4) s -= 30 + oppEnd*4;
+          }
+        }
+      }
+    }
+    return s;
+  }
+
+  score += segScoreFor(me);
+  score -= segScoreFor(op);
+
+  // -------------------------
+  // D) 即勝ち/即負け（あなたのコードの良い部分は残す）
+  // -------------------------
+  const myWin = countImmediateExactWins(cfg,b,me);
+  const opWin = countImmediateExactWins(cfg,b,op);
+
+  if(myWin>=2) score += 6e8;
+  else if(myWin===1) score += 9e6;
+
+  if(opWin>=2) score -= 7e8;
+  else if(opWin===1) score -= 1.4e7;
+
+  return score;
+}
 
     function lineFeature(r, c, col, dr, dc){
       let a=0, rr=r+dr, cc=c+dc;
